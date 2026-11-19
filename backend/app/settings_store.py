@@ -73,7 +73,7 @@ def secret_masked(key: str) -> str:
 
 DEFAULTS = {
     "ai_provider": "gemini",
-    "ai_model": "gemini-3.8-flash",
+    "ai_model": "gemini-3.5-flash-lite",
     # Set via admin panel or env — never commit real keys.
     "ai_api_key": "",
     "feature_online_describe": "1",
@@ -145,15 +145,18 @@ def ensure_defaults():
         if value and not get_setting(key):
             set_setting(key, value, secret=key in secrets)
 
-    # Migrate shut-down Gemini model IDs stored in the DB (inline map — avoid import cycles).
+    # Migrate shut-down / slower-than-needed Gemini IDs (inline map — avoid import cycles).
     _retired = {
-        "gemini-2.0-flash": "gemini-3.8-flash",
-        "gemini-2.0-flash-001": "gemini-3.8-flash",
-        "gemini-2.0-flash-exp": "gemini-3.8-flash",
+        "gemini-2.0-flash": "gemini-3.5-flash-lite",
+        "gemini-2.0-flash-001": "gemini-3.5-flash-lite",
+        "gemini-2.0-flash-exp": "gemini-3.5-flash-lite",
         "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
         "gemini-2.0-flash-lite-001": "gemini-3.5-flash-lite",
-        "gemini-1.5-flash": "gemini-3.8-flash",
-        "gemini-1.5-pro": "gemini-3.8-flash",
+        "gemini-1.5-flash": "gemini-3.5-flash-lite",
+        "gemini-1.5-pro": "gemini-3.5-flash-lite",
+        # Prefer lite for scene describe latency (can switch back in admin).
+        "gemini-3.8-flash": "gemini-3.5-flash-lite",
+        "gemini-3.6-flash": "gemini-3.5-flash-lite",
     }
     current_model = get_setting("ai_model", "")
     if current_model in _retired:

@@ -317,26 +317,30 @@ def _anthropic(key: str, model: str, prompt: str, image_b64: str | None) -> str:
 
 # Shut-down / renamed Gemini IDs → current multimodal Flash.
 _GEMINI_MODEL_ALIASES = {
-    "gemini-2.0-flash": "gemini-3.8-flash",
-    "gemini-2.0-flash-001": "gemini-3.8-flash",
-    "gemini-2.0-flash-exp": "gemini-3.8-flash",
+    "gemini-2.0-flash": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash-001": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash-exp": "gemini-3.5-flash-lite",
     "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
     "gemini-2.0-flash-lite-001": "gemini-3.5-flash-lite",
-    "gemini-1.5-flash": "gemini-3.8-flash",
-    "gemini-1.5-flash-latest": "gemini-3.8-flash",
-    "gemini-1.5-pro": "gemini-3.8-flash",
-    "gemini-pro": "gemini-3.8-flash",
-    "gemini-pro-vision": "gemini-3.8-flash",
+    "gemini-1.5-flash": "gemini-3.5-flash-lite",
+    "gemini-1.5-flash-latest": "gemini-3.5-flash-lite",
+    "gemini-1.5-pro": "gemini-3.5-flash-lite",
+    "gemini-pro": "gemini-3.5-flash-lite",
+    "gemini-pro-vision": "gemini-3.5-flash-lite",
 }
 
 # Tried in order when the primary model returns 429/503 (capacity).
+# Lite models first — describe only needs speed, not heavy reasoning.
 _GEMINI_FALLBACKS = (
-    "gemini-3.8-flash",
-    "gemini-3.6-flash",
     "gemini-3.5-flash-lite",
-    "gemini-2.5-flash",
+    "gemini-3.1-flash-lite",
     "gemini-2.5-flash-lite",
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
+    "gemini-2.5-flash",
 )
+
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 
 def normalize_gemini_model(model: str) -> str:
@@ -344,8 +348,30 @@ def normalize_gemini_model(model: str) -> str:
     if name.startswith("models/"):
         name = name[len("models/") :]
     if not name:
-        return "gemini-3.8-flash"
+        return DEFAULT_GEMINI_MODEL
     return _GEMINI_MODEL_ALIASES.get(name, name)
+
+
+def _shrink_image_b64(raw_b64: str, mime: str) -> tuple[str, str]:
+    """Downscale/compress images so Gemini describe stays fast."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    try:
+        data = base64.b64decode(raw_b64, validate=False)
+        img = Image.open(io.BytesIO(data))
+        img = img.convert("RGB")
+        max_edge = 1024
+        w, h = img.size
+        if max(w, h) > max_edge:
+            img.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=72, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii"), "image/jpeg"
+    except Exception:
+        return raw_b64, mime
 
 
 def _gemini_error_message(status: int, body: str) -> str:
@@ -393,8 +419,15 @@ def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
             header, raw_b64 = raw_b64.split(",", 1)
             if "image/" in header:
                 mime = header.split(";")[0].split(":", 1)[1].strip() or mime
+        raw_b64, mime = _shrink_image_b64(raw_b64, mime)
         parts.append({"inline_data": {"mime_type": mime, "data": raw_b64}})
-    body = {"contents": [{"parts": parts}]}
+    # Short answers + minimal thinking = much lower latency for describe.
+    gen_fast = {
+        "maxOutputTokens": 220,
+        "temperature": 0.2,
+        "thinkingConfig": {"thinkingBudget": 0},
+    }
+    gen_basic = {"maxOutputTokens": 220, "temperature": 0.2}
     last_err: ProviderError | None = None
     timeout = min(_timeout(), 20.0)
 
@@ -404,34 +437,47 @@ def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
                 "https://generativelanguage.googleapis.com/v1beta/models/"
                 f"{attempt_model}:generateContent?key={key}"
             )
-            try:
-                r = client.post(url, json=body)
-            except httpx.TimeoutException:
-                last_err = ProviderError(
-                    "timeout",
-                    f"Gemini timed out on {attempt_model}. Try again shortly.",
-                )
-                continue
-            except httpx.HTTPError as exc:
-                last_err = ProviderError("provider_error", f"Gemini network error: {exc}")
-                continue
+            configs = (gen_fast, gen_basic)
+            for gen in configs:
+                body = {"contents": [{"parts": parts}], "generationConfig": gen}
+                try:
+                    r = client.post(url, json=body)
+                except httpx.TimeoutException:
+                    last_err = ProviderError(
+                        "timeout",
+                        f"Gemini timed out on {attempt_model}. Try again shortly.",
+                    )
+                    break
+                except httpx.HTTPError as exc:
+                    last_err = ProviderError(
+                        "provider_error", f"Gemini network error: {exc}"
+                    )
+                    break
 
-            if r.status_code in (429, 503):
-                last_err = ProviderError(
-                    "provider_error",
-                    _gemini_error_message(r.status_code, r.text),
-                )
-                continue
-            if r.status_code >= 400:
-                raise ProviderError(
-                    "provider_error",
-                    _gemini_error_message(r.status_code, r.text),
-                )
-            try:
-                data = r.json()
-            except Exception as e:
-                raise ProviderError("provider_error", f"Invalid Gemini JSON: {e}") from e
-            return _gemini_extract_text(data)
+                if r.status_code in (429, 503):
+                    last_err = ProviderError(
+                        "provider_error",
+                        _gemini_error_message(r.status_code, r.text),
+                    )
+                    break
+                if r.status_code >= 400:
+                    # Some models reject thinkingConfig — retry without it.
+                    err_text = (r.text or "").lower()
+                    if gen is gen_fast and (
+                        "thinking" in err_text or r.status_code == 400
+                    ):
+                        continue
+                    raise ProviderError(
+                        "provider_error",
+                        _gemini_error_message(r.status_code, r.text),
+                    )
+                try:
+                    data = r.json()
+                except Exception as e:
+                    raise ProviderError(
+                        "provider_error", f"Invalid Gemini JSON: {e}"
+                    ) from e
+                return _gemini_extract_text(data)
 
     if last_err:
         raise last_err

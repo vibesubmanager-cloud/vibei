@@ -298,14 +298,15 @@ def admin_ai_settings_get():
     return jsonify(
         {
             "provider": get_setting("ai_provider", "gemini"),
-            "model": get_setting("ai_model", "gemini-3.8-flash"),
+            "model": get_setting("ai_model", "gemini-3.5-flash-lite"),
             "api_key_set": bool(key),
             "api_key_masked": secret_masked("ai_api_key") if key else "",
             "recommended_models": [
-                "gemini-3.8-flash",
-                "gemini-3.6-flash",
                 "gemini-3.5-flash-lite",
-                "gemini-2.5-flash",
+                "gemini-3.1-flash-lite",
+                "gemini-2.5-flash-lite",
+                "gemini-3.6-flash",
+                "gemini-3.8-flash",
             ],
         }
     )
@@ -320,7 +321,7 @@ def admin_ai_settings_save():
     ensure_defaults()
     data = request.get_json(silent=True) or {}
     provider = (data.get("provider") or "gemini").strip().lower() or "gemini"
-    model = (data.get("model") or "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+    model = (data.get("model") or "gemini-3.5-flash-lite").strip() or "gemini-3.5-flash-lite"
     if provider in ("gemini", "google"):
         model = normalize_gemini_model(model)
     key = (data.get("api_key") or data.get("ai_api_key") or "").strip()
@@ -379,7 +380,7 @@ def admin_ai_describe_test():
     current_model = get_setting("ai_model", "")
     set_setting(
         "ai_model",
-        normalize_gemini_model(current_model or "gemini-3.8-flash"),
+        normalize_gemini_model(current_model or "gemini-3.5-flash-lite"),
         secret=False,
     )
 
@@ -415,7 +416,7 @@ def admin_ai_describe_test():
                 "ok": True,
                 "description": text,
                 "provider": "gemini",
-                "model": get_setting("ai_model", "gemini-3.8-flash"),
+                "model": get_setting("ai_model", "gemini-3.5-flash-lite"),
                 "latency_ms": ms,
             }
         )

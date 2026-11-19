@@ -355,16 +355,20 @@
         </select>
         <label for="ai-model">Model</label>
         <select id="ai-model">
-          ${(s.recommended_models || ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"])
+          ${(s.recommended_models || ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash-lite", "gemini-3.6-flash", "gemini-3.8-flash"])
             .map((m) => {
-              const cur = s.model || "gemini-3.8-flash";
+              const cur = s.model || "gemini-3.5-flash-lite";
               const sel = m === cur ? " selected" : "";
-              return `<option value="${escapeHtml(m)}"${sel}>${escapeHtml(m)}</option>`;
+              const label = m.includes("lite")
+                ? m + " (fast — best for describe)"
+                : m + " (slower / heavier)";
+              return `<option value="${escapeHtml(m)}"${sel}>${escapeHtml(label)}</option>`;
             })
             .join("")}
         </select>
         <p class="muted" style="margin-top:6px">
-          <code>gemini-2.0-flash</code> is shut down — use <code>gemini-3.8-flash</code>.
+          For image describe, prefer <code>gemini-3.5-flash-lite</code> — fastest Flash-Lite.
+          Heavier models like <code>gemini-3.8-flash</code> are slower.
         </p>
         <label for="ai-api-key">API key (leave blank to keep existing)</label>
         <input id="ai-api-key" type="password" autocomplete="off" placeholder="AIza…" />
@@ -396,7 +400,7 @@
       try {
         const out = await api.saveAiSettings({
           provider: "gemini",
-          model: $("ai-model").value.trim() || "gemini-3.8-flash",
+          model: $("ai-model").value.trim() || "gemini-3.5-flash-lite",
           api_key: $("ai-api-key").value.trim(),
         });
         msg.textContent = out.api_key_set
@@ -417,7 +421,7 @@
         // Persist selected model before testing so the server uses it.
         await api.saveAiSettings({
           provider: "gemini",
-          model: $("ai-model").value.trim() || "gemini-3.8-flash",
+          model: $("ai-model").value.trim() || "gemini-3.5-flash-lite",
           api_key: $("ai-api-key").value.trim(),
         });
         $("ai-api-key").value = "";
