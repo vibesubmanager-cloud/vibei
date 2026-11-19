@@ -145,11 +145,16 @@ def ensure_defaults():
         if value and not get_setting(key):
             set_setting(key, value, secret=key in secrets)
 
-    # Migrate shut-down Gemini model IDs stored in the DB.
-    from .ai_providers import normalize_gemini_model
-
+    # Migrate shut-down Gemini model IDs stored in the DB (inline map — avoid import cycles).
+    _retired = {
+        "gemini-2.0-flash": "gemini-3.8-flash",
+        "gemini-2.0-flash-001": "gemini-3.8-flash",
+        "gemini-2.0-flash-exp": "gemini-3.8-flash",
+        "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+        "gemini-2.0-flash-lite-001": "gemini-3.5-flash-lite",
+        "gemini-1.5-flash": "gemini-3.8-flash",
+        "gemini-1.5-pro": "gemini-3.8-flash",
+    }
     current_model = get_setting("ai_model", "")
-    if current_model:
-        migrated = normalize_gemini_model(current_model)
-        if migrated != current_model:
-            set_setting("ai_model", migrated, secret=False)
+    if current_model in _retired:
+        set_setting("ai_model", _retired[current_model], secret=False)

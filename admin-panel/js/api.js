@@ -37,7 +37,12 @@
     }
 
     if (!res.ok) {
-      const err = new Error((data && data.message) || res.statusText);
+      let message = (data && data.message) || res.statusText || "Request failed";
+      if (typeof message === "string" && /<!doctype html>|Internal Server Error/i.test(message)) {
+        message =
+          "Server error or timeout (often Gemini overload). Wait a bit, or try model gemini-3.5-flash-lite.";
+      }
+      const err = new Error(message);
       err.status = res.status;
       err.data = data;
       throw err;

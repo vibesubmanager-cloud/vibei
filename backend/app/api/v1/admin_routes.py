@@ -356,7 +356,10 @@ def admin_ai_test():
     try:
         return jsonify(test_connection())
     except ProviderError as e:
-        return _err(e.code, e.message, 502)
+        status = 504 if e.code == "timeout" else 502
+        return _err(e.code, e.message, status)
+    except Exception as e:
+        return _err("server_error", f"AI test failed: {e}", 500)
 
 
 @api_v1.post("/admin/ai-describe-test")
@@ -366,11 +369,10 @@ def admin_ai_describe_test():
     import base64
     import time
 
-    from ...ai_providers import ProviderError, describe_image
+    from ...ai_providers import ProviderError, describe_image, normalize_gemini_model
     from ...settings_store import get_setting, set_setting
 
     data = request.get_json(silent=True) or {}
-    from ...ai_providers import normalize_gemini_model
 
     # Force Gemini for this admin test path as requested.
     set_setting("ai_provider", "gemini", secret=False)
@@ -418,4 +420,7 @@ def admin_ai_describe_test():
             }
         )
     except ProviderError as e:
-        return _err(e.code, e.message, 502)
+        status = 504 if e.code == "timeout" else 502
+        return _err(e.code, e.message, status)
+    except Exception as e:
+        return _err("server_error", f"Describe test failed: {e}", 500)

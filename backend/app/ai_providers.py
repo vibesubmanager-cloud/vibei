@@ -31,7 +31,13 @@ def test_connection() -> dict:
     if provider in ("google", "gemini"):
         model = normalize_gemini_model(model)
     prompt = "Reply with exactly: ok"
-    text = _chat(provider, key, model, prompt, image_b64=None)
+    try:
+        text = _chat(provider, key, model, prompt, image_b64=None)
+    except httpx.TimeoutException as e:
+        raise ProviderError(
+            "timeout",
+            "Gemini timed out — model may be overloaded. Try again or switch model.",
+        ) from e
     return {"ok": True, "provider": provider, "model": model, "reply": text[:200]}
 
 
@@ -323,6 +329,15 @@ _GEMINI_MODEL_ALIASES = {
     "gemini-pro-vision": "gemini-3.8-flash",
 }
 
+# Tried in order when the primary model returns 429/503 (capacity).
+_GEMINI_FALLBACKS = (
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+
 
 def normalize_gemini_model(model: str) -> str:
     name = (model or "").strip()
@@ -345,8 +360,31 @@ def _gemini_error_message(status: int, body: str) -> str:
     return f"Gemini HTTP {status}" + (f": {msg}" if msg else "")
 
 
+def _gemini_models_to_try(primary: str) -> list[str]:
+    primary = normalize_gemini_model(primary)
+    out: list[str] = []
+    for name in (primary, *_GEMINI_FALLBACKS):
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _gemini_extract_text(data: dict) -> str:
+    cands = data.get("candidates") or []
+    if not cands:
+        feedback = data.get("promptFeedback") or {}
+        reason = feedback.get("blockReason") or feedback.get("block_reason")
+        if reason:
+            raise ProviderError("provider_error", f"Gemini blocked the prompt ({reason})")
+        raise ProviderError("provider_error", "Empty Gemini response")
+    parts_out = cands[0].get("content", {}).get("parts") or []
+    text = "\n".join(p.get("text", "") for p in parts_out).strip()
+    if not text:
+        raise ProviderError("provider_error", "Empty Gemini response")
+    return text
+
+
 def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
-    model = normalize_gemini_model(model)
     parts = [{"text": prompt}]
     if image_b64:
         raw_b64 = image_b64
@@ -356,18 +394,45 @@ def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
             if "image/" in header:
                 mime = header.split(";")[0].split(":", 1)[1].strip() or mime
         parts.append({"inline_data": {"mime_type": mime, "data": raw_b64}})
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent?key={key}"
-    )
     body = {"contents": [{"parts": parts}]}
-    with httpx.Client(timeout=_timeout()) as client:
-        r = client.post(url, json=body)
-    if r.status_code >= 400:
-        raise ProviderError("provider_error", _gemini_error_message(r.status_code, r.text))
-    data = r.json()
-    cands = data.get("candidates") or []
-    if not cands:
-        raise ProviderError("provider_error", "Empty Gemini response")
-    parts_out = cands[0].get("content", {}).get("parts") or []
-    return "\n".join(p.get("text", "") for p in parts_out).strip()
+    last_err: ProviderError | None = None
+    timeout = min(_timeout(), 20.0)
+
+    with httpx.Client(timeout=timeout) as client:
+        for attempt_model in _gemini_models_to_try(model):
+            url = (
+                "https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{attempt_model}:generateContent?key={key}"
+            )
+            try:
+                r = client.post(url, json=body)
+            except httpx.TimeoutException:
+                last_err = ProviderError(
+                    "timeout",
+                    f"Gemini timed out on {attempt_model}. Try again shortly.",
+                )
+                continue
+            except httpx.HTTPError as exc:
+                last_err = ProviderError("provider_error", f"Gemini network error: {exc}")
+                continue
+
+            if r.status_code in (429, 503):
+                last_err = ProviderError(
+                    "provider_error",
+                    _gemini_error_message(r.status_code, r.text),
+                )
+                continue
+            if r.status_code >= 400:
+                raise ProviderError(
+                    "provider_error",
+                    _gemini_error_message(r.status_code, r.text),
+                )
+            try:
+                data = r.json()
+            except Exception as e:
+                raise ProviderError("provider_error", f"Invalid Gemini JSON: {e}") from e
+            return _gemini_extract_text(data)
+
+    if last_err:
+        raise last_err
+    raise ProviderError("provider_error", "Gemini request failed")
