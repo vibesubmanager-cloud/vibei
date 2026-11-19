@@ -30,7 +30,8 @@
 **/*api*key*
 **/*secret*
 **/gemini*.txt
-**/GEMINI*
+**/GEMINI_API_KEY*
+**/.gemini*
 
 # Vosk unpacked models (keep zip/assets, ignore extracted)
 **/vosk-model-small-en-us/
