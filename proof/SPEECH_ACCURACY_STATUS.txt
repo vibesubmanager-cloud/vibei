@@ -1,0 +1,5 @@
+﻿SPEECH_ACCURACY_PROOF 2026-11-18T13:55:46.2232195+05:30
+adb: List of devices attached | 
+Unit tests: packages/oriente_commands dart test = 63 passed (speech_accuracy_parser_test + others).
+Commit: b362302
+Phone gate: blocked until USB authorized — reconnect to install and hand-verify.

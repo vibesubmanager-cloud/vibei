@@ -1,0 +1,10 @@
+{% extends "admin/base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block body %}
+<h1>Dashboard</h1>
+<div class="card">
+  <p>AI configured: <strong>{{ 'yes' if ai_configured else 'no' }}</strong></p>
+  <p>Provider: <strong>{{ provider or '—' }}</strong></p>
+  <p>Use the nav to manage providers, limits, Cloudinary, users, and usage.</p>
+</div>
+{% endblock %}

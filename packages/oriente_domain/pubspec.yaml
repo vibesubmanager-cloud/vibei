@@ -1,0 +1,11 @@
+name: oriente_domain
+description: Platform-neutral domain models for Oriente.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.1
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.0

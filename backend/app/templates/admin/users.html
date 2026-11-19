@@ -1,0 +1,41 @@
+{% extends "admin/base.html" %}
+{% block title %}Users{% endblock %}
+{% block body %}
+<h1>Users</h1>
+<form method="get" class="card row">
+  <input name="q" value="{{ q }}" placeholder="Search email">
+  <button type="submit">Search</button>
+</form>
+<div class="card">
+<table>
+  <thead><tr><th>ID</th><th>Email</th><th>Status</th><th>Actions</th></tr></thead>
+  <tbody>
+  {% for u in users %}
+    <tr>
+      <td>{{ u.id }}</td>
+      <td>{{ u.email }}</td>
+      <td>{{ 'disabled' if u.disabled else 'active' }}</td>
+      <td>
+        {% if u.disabled %}
+        <form class="inline" method="post" action="{{ url_for('admin.user_enable', uid=u.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="secondary">Enable</button>
+        </form>
+        {% else %}
+        <form class="inline" method="post" action="{{ url_for('admin.user_disable', uid=u.id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="secondary">Disable</button>
+        </form>
+        {% endif %}
+        <a href="{{ url_for('admin.user_export', uid=u.id) }}">Export</a>
+        <form class="inline" method="post" action="{{ url_for('admin.user_delete', uid=u.id) }}" onsubmit="return confirm('Delete user?');">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit">Delete</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

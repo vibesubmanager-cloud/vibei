@@ -1,0 +1,61 @@
+# Flutter / Dart
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.flutter-plugins-dependencies
+**/.packages
+**/.pub-cache/
+**/.pub/
+**/doc/api/
+**/coverage/
+*.iml
+.idea/
+*.lock
+!pubspec.lock
+
+# Android
+**/local.properties
+**/.gradle/
+**/captures/
+**/key.properties
+**/*.jks
+**/*.keystore
+**/android/app/libs/*.aar
+!**/android/app/libs/.gitkeep
+
+# Secrets / keys
+**/.env
+**/.env.*
+**/secrets/
+**/*api*key*
+**/*secret*
+**/gemini*.txt
+**/GEMINI*
+
+# Vosk unpacked models (keep zip/assets, ignore extracted)
+**/vosk-model-small-en-us/
+**/files/vosk-model*/
+
+# IDE / OS
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Logs / proof dumps with secrets risk
+**/proof/*.log
+
+# APKs exceed GitHub's 100MB file limit — keep locally, do not push
+**/*.apk
+*.apk
+
+# Python backend
+**/__pycache__/
+**/.pytest_cache/
+**/.venv/
+**/venv/
+**/*.pyc
+
+# Node
+**/node_modules/

@@ -1,0 +1,17 @@
+{% extends "admin/base.html" %}
+{% block title %}App Config{% endblock %}
+{% block body %}
+<h1>App Config</h1>
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Maintenance message</label>
+  <input name="maintenance_message" value="{{ maintenance_message }}">
+  <label>Minimum app version</label>
+  <input name="min_app_version" value="{{ min_app_version }}">
+  <label>Consent text</label>
+  <textarea name="consent_text" rows="5">{{ consent_text }}</textarea>
+  <label>Consent version</label>
+  <input name="consent_version" value="{{ consent_version }}">
+  <p style="margin-top:16px"><button type="submit">Save</button></p>
+</form>
+{% endblock %}

@@ -1,0 +1,22 @@
+{% extends "admin/base.html" %}
+{% block title %}Usage{% endblock %}
+{% block body %}
+<h1>Usage (7 days)</h1>
+<div class="card">
+<table>
+  <thead><tr><th>When</th><th>User</th><th>Feature</th><th>OK</th><th>ms</th><th>Error</th></tr></thead>
+  <tbody>
+  {% for e in events %}
+    <tr>
+      <td>{{ e.created_at }}</td>
+      <td>{{ e.user_id }}</td>
+      <td>{{ e.feature }}</td>
+      <td>{{ e.ok }}</td>
+      <td>{{ e.latency_ms }}</td>
+      <td>{{ e.error_code or '' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endblock %}

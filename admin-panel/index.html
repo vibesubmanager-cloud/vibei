@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PathFinder Admin</title>
+    <link rel="stylesheet" href="css/styles.css" />
+  </head>
+  <body>
+    <div id="login-view">
+      <form class="login-card" id="login-form">
+        <h1>PathFinder Admin</h1>
+        <p>
+          Static HTML/CSS/JS panel (GitHub Pages). Talks to the Flask API on
+          Render.
+        </p>
+        <label for="api-base-input">API base URL (Render)</label>
+        <input
+          id="api-base-input"
+          type="url"
+          placeholder="https://your-service.onrender.com"
+          required
+        />
+        <label for="email">Admin email</label>
+        <input id="email" type="email" autocomplete="username" required />
+        <label for="password">Password</label>
+        <input
+          id="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+        <button class="full" type="submit">Sign in</button>
+        <div class="error" id="login-error"></div>
+      </form>
+    </div>
+
+    <div id="app-view" class="hidden">
+      <aside class="sidebar">
+        <div class="brand">PathFinder</div>
+        <button class="nav-btn active" data-page="dashboard">Dashboard</button>
+        <button class="nav-btn" data-page="users">Users</button>
+        <button class="nav-btn" data-page="activities">Activities</button>
+        <button class="nav-btn" data-page="usage">AI usage</button>
+        <div class="spacer"></div>
+        <div class="muted" id="admin-email" style="padding: 0 8px"></div>
+        <button class="nav-btn" id="logout-btn">Log out</button>
+      </aside>
+      <main class="main">
+        <div class="topbar">
+          <h2 id="page-title">Dashboard</h2>
+        </div>
+        <div id="content"></div>
+      </main>
+    </div>
+
+    <script src="js/config.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/app.js"></script>
+  </body>
+</html>

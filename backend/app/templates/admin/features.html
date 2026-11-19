@@ -1,0 +1,32 @@
+{% extends "admin/base.html" %}
+{% block title %}Online Features{% endblock %}
+{% block body %}
+<h1>Online Features</h1>
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label><input type="checkbox" name="feature_online_describe" {% if describe %}checked{% endif %}> Online describe</label>
+  <label><input type="checkbox" name="feature_online_read" {% if read %}checked{% endif %}> Online read</label>
+  <label><input type="checkbox" name="feature_voice_assistant" {% if voice %}checked{% endif %}> Voice assistant</label>
+  <label for="prompt_describe">Describe prompt</label>
+  <textarea id="prompt_describe" name="prompt_describe" rows="4">{{ prompt_describe }}</textarea>
+  <label for="prompt_read">Read prompt</label>
+  <textarea id="prompt_read" name="prompt_read" rows="4">{{ prompt_read }}</textarea>
+  <label for="prompt_voice">Voice prompt</label>
+  <textarea id="prompt_voice" name="prompt_voice" rows="4">{{ prompt_voice }}</textarea>
+  <div class="row">
+    <div>
+      <label for="max_image_bytes">Max image bytes</label>
+      <input id="max_image_bytes" name="max_image_bytes" value="{{ max_image_bytes }}">
+    </div>
+    <div>
+      <label for="provider_timeout_sec">Timeout (sec)</label>
+      <input id="provider_timeout_sec" name="provider_timeout_sec" value="{{ provider_timeout_sec }}">
+    </div>
+    <div>
+      <label for="languages">Languages</label>
+      <input id="languages" name="languages" value="{{ languages }}">
+    </div>
+  </div>
+  <p style="margin-top:16px"><button type="submit">Save</button></p>
+</form>
+{% endblock %}

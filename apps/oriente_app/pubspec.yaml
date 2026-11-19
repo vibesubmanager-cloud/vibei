@@ -1,0 +1,69 @@
+name: oriente_app
+description: VIVEI — camera and voice guidance for blind and low-vision users.
+publish_to: none
+version: 0.1.1+2
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  permission_handler: ^12.0.1
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.5
+  oriente_domain:
+    path: ../../packages/oriente_domain
+  oriente_commands:
+    path: ../../packages/oriente_commands
+  oriente_platform:
+    path: ../../packages/oriente_platform
+  oriente_native:
+    path: ../../packages/oriente_native
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+  # Splash assets already generated; keep package off the Android plugin classpath
+  # (release builds were failing to resolve FlutterNativeSplashPlugin).
+  # flutter_native_splash: ^2.4.4
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/images/brand_logo.png
+  adaptive_icon_background: "#0B1020"
+  adaptive_icon_foreground: assets/images/brand_logo.png
+  adaptive_icon_foreground_inset: 18
+  min_sdk_android: 21
+
+flutter_native_splash:
+  color: "#0B1020"
+  image: assets/images/brand_logo.png
+  android: true
+  ios: false
+  android_12:
+    color: "#0B1020"
+    image: assets/images/brand_logo.png
+    icon_background_color: "#0B1020"
+
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - assets/branding/vibei_logo.png
+    - assets/images/brand_logo.png
+    - assets/images/option_glasses.png
+    - assets/images/option_phone.png
+  fonts:
+    - family: AtkinsonHyperlegible
+      fonts:
+        - asset: assets/fonts/AtkinsonHyperlegible-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/AtkinsonHyperlegible-Bold.ttf
+          weight: 700

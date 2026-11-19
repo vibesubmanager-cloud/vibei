@@ -1,0 +1,19 @@
+name: oriente_platform
+description: Typed MethodChannel/EventChannel facades for Oriente native.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  shared_preferences: ^2.5.3
+  oriente_domain:
+    path: ../oriente_domain
+  oriente_native:
+    path: ../oriente_native
+
+dev_dependencies:
+  flutter_lints: ^6.0.0

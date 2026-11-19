@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}VIBEI Admin{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin.css') }}">
+</head>
+<body>
+  {% if session.get('admin_id') %}
+  <header class="top">
+    <a class="brand" href="{{ url_for('admin.dashboard') }}">VIBEI Admin</a>
+    <nav>
+      <a href="{{ url_for('admin.ai_providers') }}">AI</a>
+      <a href="{{ url_for('admin.features') }}">Features</a>
+      <a href="{{ url_for('admin.limits') }}">Limits</a>
+      <a href="{{ url_for('admin.cloudinary_page') }}">Cloudinary</a>
+      <a href="{{ url_for('admin.app_config') }}">App</a>
+      <a href="{{ url_for('admin.users') }}">Users</a>
+      <a href="{{ url_for('admin.usage') }}">Usage</a>
+      <a href="{{ url_for('admin.audit_page') }}">Audit</a>
+      <form method="post" action="{{ url_for('admin.logout') }}" class="inline">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit">Log out</button>
+      </form>
+    </nav>
+  </header>
+  {% endif %}
+  <main class="wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in messages %}
+        <p class="flash {{ cat }}" role="status">{{ msg }}</p>
+      {% endfor %}
+    {% endwith %}
+    {% block body %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', filename='admin.js') }}"></script>
+</body>
+</html>

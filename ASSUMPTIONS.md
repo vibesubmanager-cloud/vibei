@@ -1,0 +1,31 @@
+# Assumptions
+
+- Product display name is `VIVEI` (UI constant + localized string); package/APK id remains `com.oriente.oriente_app` / historical VIBEI paths unchanged.
+- Smart glasses keep the existing Bluetooth pairing flow (no fake “unavailable” screen); phone choice still skips pairing.
+- Camera task hero (orb → full preview) is approximated by full-bleed `CameraTaskScaffold` rather than a shared-element Hero animation, to avoid touching camera pipelines.
+- Brand imagery: `assets/images/brand_logo.png`, `option_phone.png`, `option_glasses.png` (mapped from provided Gemini / removebg files). Drawn vector logo removed.
+- **Tap-and-speak cancel root cause (final addendum):** Soft ASR failures (`ERROR_NO_MATCH` / `ERROR_SPEECH_TIMEOUT`) and empty/junk finals were mapped to `onAsr("", true)` → Flutter `_goHome`. Secondary: `AppLifecycleState.inactive` cancelled listening during ASR. Fixed by keeping ASR alive on soft errors, ignoring empty finals in Flutter, and only cancelling on paused/hidden/detached. Stop spotter stays disarmed in plain listening.
+- **Voice broken after beep fix (2026-11-15):** Attempts to silence Google’s listen chime (stream mute, offline/on-device ASR, confidence gating, long restart gaps) made Tap-and-speak stop recognizing. Restored simple cloud `SpeechRecognizer`, no volume muting, no confidence filter in command mode. Priority: recognition works; accept a possible soft system chime.
+- **Core stabilize (urgent):** Session `idle→goHome` removed (killed Find). StopSpotter no longer opens a second mic. Vibration only while Search ticks run (thinking ticks silent). Personal remember / extras behind `coreExtrasEnabledProvider=false`. Unknown → fixed sorry phrase. HOME status “Ready”. Dev command log in Settings → Developer.
+- Describe / Read: online = detailed via embedded Gemini (and backend if configured); offline = basic SceneDescriber / ML Kit OCR with a one-time spoken notice. Never refuse or force-home for missing internet. Offline describer always on (Settings toggle removed).
+- Embedded Gemini API key lives in `gemini_vision_client.dart` (+ backend `DEFAULTS`) so a distributed APK can use detailed describe/read without a remote admin setup. Replace later.
+- `onlineVisionConsent` defaults ON for APK usability; user can still disable in Settings.
+- Connectivity without `VIBEI_API_BASE` probes `clients3.google.com/generate_204` so on-device Gemini sees real internet.
+- FIND (object / text / personal) is offline-only: `OfflineFindGuard` blocks all BackendApiClient / Gemini network calls; cable online locate disabled.
+- Speech mid-sentence cuts only for stop/safety; glasses scan/speech cancelled via ActivityScope on leave/background.
+- Describe-once bug root cause: default Describe path used `continuous: false`, which set `_oneshotDone` and cancelled the timer after the first utterance. Fixed by making Describe a continuous STILL/MOVING/NEW_VIEW loop until Stop; speech queue frees on completion/error/cancel with a 12s watchdog.
+- Hybrid online layer uses `BackendCloudVisionProvider` / `BackendVoiceUnderstandingProvider` calling the Flask API when base URL is set. No NoOp/Fake providers in the app.
+- Offline cable detection uses optional `assets/models/cable_detector.tflite` + `cable_labels.txt` on the shared FrameHub; missing assets disable only cable offline detection (silent in Describe).
+- Feature screens use Kotlin `FrameHub` via `oriente/frames` + `grabLatestJpeg` (no Flutter `takePicture`). Preview UI is a dark analysis panel with overlays.
+- Describe uses optical-flow + pose-proxy + luma motion from FrameHub; cloud enhance only when the camera is still.
+- Performance overlay (FPS, detect/OCR latency, memory, motion) is behind Settings → Developer.
+- Personal Objects are name→detector-label aliases in SharedPreferences `personalObjects`; optional sync via `/api/v1/sync/personal` when signed in.
+- Search text / nearby text use on-device ML Kit OCR from the shared frame stream; online READ uses Gemini (or `/api/v1/vision/read` when backend configured).
+- Search ticks/earcons are synthesized on-device (AudioTrack); no bundled WAV assets.
+- Restricted task mic reuses system SpeechRecognizer with a short vocabulary filter + confidence ≥ 0.55; barge-in allowed in task mode.
+- Listening ends after 30s of silence (nudge at 20s). Soft ASR timeouts do not end listening.
+- COCO maps: `dining table` → “table”, `tv` → “TV”/screen. Detector cannot see: desk, monitor, keys, wallet, glasses, door, wall, floor (not in COCO).
+- Pose confirmation for “sitting on” is optional; box geometry alone is used when pose is unavailable. FrameHub pose motion is a silhouette COM proxy, not full MediaPipe Pose.
+- Admin can replace the embedded Gemini key; app also holds the key for APK-only online describe/read.
+- Admin bootstrap is one-shot via `ADMIN_BOOTSTRAP_TOKEN`; route disables after first admin.
+- SQLite is allowed for local backend bring-up; production uses Neon PostgreSQL with SSL.

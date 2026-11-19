@@ -1,0 +1,23 @@
+{% extends "admin/base.html" %}
+{% block title %}AI Providers{% endblock %}
+{% block body %}
+<h1>AI Providers</h1>
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label for="ai_provider">Active provider</label>
+  <select id="ai_provider" name="ai_provider">
+    <option value="openai" {% if provider=='openai' %}selected{% endif %}>OpenAI</option>
+    <option value="anthropic" {% if provider=='anthropic' %}selected{% endif %}>Anthropic</option>
+    <option value="gemini" {% if provider=='gemini' %}selected{% endif %}>Google Gemini</option>
+  </select>
+  <label for="ai_model">Model ID</label>
+  <input id="ai_model" name="ai_model" value="{{ model }}" placeholder="e.g. gpt-4o-mini" required>
+  <label for="ai_api_key">API key (write-only{% if key_masked %}; saved {{ key_masked }}{% endif %})</label>
+  <input id="ai_api_key" name="ai_api_key" type="password" autocomplete="off" placeholder="Leave blank to keep current">
+  <p class="row" style="margin-top:16px">
+    <button type="submit">Save</button>
+    <button type="button" class="secondary" data-test-ai="{{ url_for('admin.ai_test') }}">Test connection</button>
+  </p>
+  <pre data-ai-result></pre>
+</form>
+{% endblock %}

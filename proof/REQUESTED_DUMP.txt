@@ -1,0 +1,2286 @@
+=== 1. git log ===
+NO .git DIRECTORY IN c:\Users\buxin\Desktop\FLUTER
+Cannot run git log. Last-known-good commit: UNKNOWN (no git history).
+Conversation note: FIND worked on-device 2026-11-15 via adb inject (proof/search_find_bottle.png) before USB auth issues; user reports voice FIND broken after Gemini/API-key era (backend mission ~2026-11-15).
+
+=== 2. SpeechModule.kt ===
+package com.oriente.oriente_native.speech
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
+import android.util.Log
+import java.io.File
+import java.util.Locale
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * TTS via Android TextToSpeech.
+ * ASR via standard cloud SpeechRecognizer (simple path that worked on device).
+ */
+class SpeechModule(
+    private val context: Context,
+    private val onAsr: (text: String, isFinal: Boolean) -> Unit,
+    private val onTtsSpeakingChanged: ((Boolean) -> Unit)? = null,
+    private val onErrorSpokenReady: (() -> Unit)? = null,
+) {
+    private val main = Handler(Looper.getMainLooper())
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var speechRate = 1.0f
+    private var speechVolume = 1.0f
+
+    private var recognizer: SpeechRecognizer? = null
+    private var listening = false
+    private var wantListening = false
+    private var ttsSpeaking = false
+    private var taskMode = false
+    private var minConfidence = 0.35f
+    private val afterSpeak = ConcurrentHashMap<String, () -> Unit>()
+    @Volatile private var speakingText: String = ""
+    private var ducked = false
+    private var restartRunnable: Runnable? = null
+
+    val isTtsReady: Boolean get() = ttsReady
+    val isVoskReady: Boolean
+        get() = File(context.filesDir, "vosk-model-small-en-us").exists()
+
+    fun init() {
+        tts = TextToSpeech(context) { status ->
+            ttsReady = status == TextToSpeech.SUCCESS
+            if (ttsReady) {
+                tts?.language = Locale.getDefault()
+                tts?.setSpeechRate(speechRate)
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        ttsSpeaking = true
+                        onTtsSpeakingChanged?.invoke(true)
+                        if (wantListening && !listening && taskMode) {
+                            main.postDelayed({ beginListen() }, 80)
+                        }
+                    }
+
+                    override fun onDone(utteranceId: String?) {
+                        ttsSpeaking = false
+                        onTtsSpeakingChanged?.invoke(false)
+                        val id = utteranceId ?: return
+                        val cb = afterSpeak.remove(id)
+                        main.post {
+                            cb?.invoke()
+                            if (wantListening && !listening) {
+                                main.postDelayed({ beginListen() }, 280)
+                            }
+                        }
+                    }
+
+                    @Deprecated("Deprecated in Java")
+                    override fun onError(utteranceId: String?) {
+                        ttsSpeaking = false
+                        onTtsSpeakingChanged?.invoke(false)
+                        val id = utteranceId ?: return
+                        val cb = afterSpeak.remove(id)
+                        main.post {
+                            cb?.invoke()
+                            if (wantListening && !listening) {
+                                main.postDelayed({ beginListen() }, 280)
+                            }
+                        }
+                    }
+                })
+            }
+            onErrorSpokenReady?.invoke()
+        }
+    }
+
+    fun setSpeechRate(rate: Double) {
+        speechRate = rate.toFloat().coerceIn(0.5f, 2.0f)
+        tts?.setSpeechRate(speechRate)
+    }
+
+    fun setSpeechVolume(volume: Double) {
+        speechVolume = volume.toFloat().coerceIn(0.2f, 1.0f)
+    }
+
+    fun setTaskMode(enabled: Boolean) {
+        taskMode = enabled
+    }
+
+    fun setMinConfidence(value: Double) {
+        minConfidence = value.toFloat().coerceIn(0.1f, 1.0f)
+    }
+
+    fun stopSpeaking() {
+        runCatching { tts?.stop() }
+        ttsSpeaking = false
+        speakingText = ""
+        ducked = false
+        onTtsSpeakingChanged?.invoke(false)
+        afterSpeak.clear()
+    }
+
+    fun setSpeakingText(text: String) {
+        speakingText = text.lowercase(Locale.getDefault())
+    }
+
+    fun duckVolume(duck: Boolean) {
+        ducked = duck
+    }
+
+    fun speak(text: String, interrupt: Boolean = true) {
+        val engine = tts ?: return
+        if (!ttsReady) return
+        speakingText = text.lowercase(Locale.getDefault())
+        val mode = if (interrupt) TextToSpeech.QUEUE_FLUSH else TextToSpeech.QUEUE_ADD
+        val vol = if (ducked) (speechVolume * 0.25f).coerceIn(0.05f, 1f) else speechVolume
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, vol)
+        }
+        engine.speak(text, mode, params, UUID.randomUUID().toString())
+    }
+
+    fun speakThen(text: String, gapMs: Long = 400, after: () -> Unit) {
+        val engine = tts
+        if (engine == null || !ttsReady || text.isBlank()) {
+            main.postDelayed(after, gapMs)
+            return
+        }
+        val id = UUID.randomUUID().toString()
+        afterSpeak[id] = {
+            main.postDelayed(after, gapMs)
+        }
+        val params = Bundle().apply {
+            putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, speechVolume)
+        }
+        engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, id)
+    }
+
+    fun startListening() {
+        main.post {
+            wantListening = true
+            if (ttsSpeaking && !taskMode) return@post
+            if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                speak(
+                    "Speech recognition is not available on this phone. " +
+                        "Please install or update the Google app and allow microphone.",
+                )
+                return@post
+            }
+            // Always reset so a stuck "listening" flag cannot block Tap-and-speak.
+            runCatching { recognizer?.cancel() }
+            listening = false
+            beginListen()
+        }
+    }
+
+    private fun beginListen() {
+        if (!wantListening) return
+        if (ttsSpeaking && !taskMode) return
+        if (listening) return
+        ensureRecognizer()
+        listening = true
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                if (taskMode) 1500 else 2500,
+            )
+            putExtra(
+                RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                if (taskMode) 1000 else 1800,
+            )
+        }
+        try {
+            Log.i(TAG, "beginListen taskMode=$taskMode")
+            recognizer?.startListening(intent)
+        } catch (t: Throwable) {
+            Log.e(TAG, "startListening failed", t)
+            listening = false
+            if (!taskMode) {
+                speak("Could not start speech recognition. Update the Google app and try again.")
+            }
+        }
+    }
+
+    private fun scheduleRestart(delayMs: Long) {
+        if (!wantListening) return
+        restartRunnable?.let { main.removeCallbacks(it) }
+        val r = Runnable {
+            restartRunnable = null
+            if (wantListening && !listening) beginListen()
+        }
+        restartRunnable = r
+        main.postDelayed(r, delayMs)
+    }
+
+    private fun ensureRecognizer() {
+        if (recognizer == null) {
+            recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                setRecognitionListener(listener)
+            }
+        }
+    }
+
+    private fun resetRecognizer() {
+        runCatching { recognizer?.cancel() }
+        runCatching { recognizer?.destroy() }
+        recognizer = null
+        listening = false
+        ensureRecognizer()
+    }
+
+    fun stopListening() {
+        main.post {
+            wantListening = false
+            listening = false
+            restartRunnable?.let { main.removeCallbacks(it) }
+            restartRunnable = null
+            runCatching { recognizer?.stopListening() }
+            runCatching { recognizer?.cancel() }
+        }
+    }
+
+    fun release() {
+        stopListening()
+        afterSpeak.clear()
+        recognizer?.destroy()
+        recognizer = null
+        tts?.shutdown()
+        tts = null
+        ttsReady = false
+    }
+
+    private fun isEchoJunk(text: String): Boolean {
+        val t = text.lowercase().trim()
+        if (t.isEmpty()) return true
+        val junk = listOf(
+            "listening",
+            "try again",
+            "trying again",
+            "cancelled",
+            "vibei",
+            "vivei",
+            "speech recognition",
+            "i'm still listening",
+            "im still listening",
+            "still looking",
+            "lost it",
+        )
+        if (junk.any { t == it || t.startsWith("$it ") || (t.contains(it) && t.length < 28) }) {
+            return true
+        }
+        val spoken = speakingText
+        if (spoken.isNotEmpty() && t.length >= 3) {
+            if (spoken.contains(t) || t.split(" ").all { w -> spoken.contains(w) && w.length > 2 }) {
+                val isStop = t.contains("stop") || t.contains("cancel") || t.contains("quiet") ||
+                    t.contains("enough") || t.contains("go back")
+                if (!isStop) return true
+            }
+        }
+        return false
+    }
+
+    private fun passesTaskFilter(text: String): Boolean {
+        if (!taskMode) return true
+        val allowed = listOf(
+            "stop speaking", "be quiet", "mute", "quiet",
+            "stop looking", "stop", "cancel", "go back", "back",
+            "repeat", "keep looking", "describe", "what is that", "what's that",
+            "pause", "resume", "next paragraph", "previous paragraph",
+            "next", "previous", "torch", "flashlight",
+        )
+        val t = text.lowercase()
+        return allowed.any { t == it || t.contains(it) }
+    }
+
+    private fun bestResult(results: Bundle?): String {
+        val texts = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            ?: return ""
+        val scores = results.getFloatArray(SpeechRecognizer.CONFIDENCE_SCORES)
+        // Command Tap-and-speak: never drop by confidence — that silently ate commands.
+        if (!taskMode || scores == null || scores.isEmpty()) {
+            return texts.firstOrNull().orEmpty()
+        }
+        var bestIdx = 0
+        var best = -1f
+        for (i in scores.indices) {
+            if (scores[i] > best) {
+                best = scores[i]
+                bestIdx = i
+            }
+        }
+        if (best in 0f..1f && best < minConfidence) return ""
+        return texts.getOrNull(bestIdx).orEmpty()
+    }
+
+    private val listener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) {
+            Log.i(TAG, "onReadyForSpeech")
+        }
+
+        override fun onBeginningOfSpeech() {
+            Log.i(TAG, "onBeginningOfSpeech")
+            if (ttsSpeaking) ducked = true
+        }
+
+        override fun onRmsChanged(rmsdB: Float) {
+            if (ttsSpeaking && rmsdB > 4f) ducked = true
+        }
+
+        override fun onBufferReceived(buffer: ByteArray?) {}
+        override fun onEndOfSpeech() {}
+
+        override fun onError(error: Int) {
+            listening = false
+            Log.w(TAG, "ASR error code=$error taskMode=$taskMode want=$wantListening")
+            if (!wantListening) return
+
+            val softFail = error == SpeechRecognizer.ERROR_NO_MATCH ||
+                error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+            val retryable = error == SpeechRecognizer.ERROR_CLIENT ||
+                error == SpeechRecognizer.ERROR_SERVER ||
+                error == SpeechRecognizer.ERROR_NETWORK ||
+                error == SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
+                error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+
+            if (softFail || retryable || taskMode) {
+                if (error == SpeechRecognizer.ERROR_CLIENT ||
+                    error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                ) {
+                    resetRecognizer()
+                }
+                // Keep Tap-and-speak alive; Flutter owns the 30s silence end.
+                scheduleRestart(400)
+                return
+            }
+
+            wantListening = false
+            val msg = when (error) {
+                SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                    "Microphone permission is missing. Allow microphone in settings."
+                SpeechRecognizer.ERROR_AUDIO ->
+                    "Microphone error. Close other apps using the mic."
+                else ->
+                    "Speech recognition failed. Update the Google app, allow microphone, then try again."
+            }
+            speak(msg)
+        }
+
+        override fun onResults(results: Bundle?) {
+            listening = false
+            val text = bestResult(results)
+            Log.i(TAG, "onResults text='$text'")
+            if (text.isNotEmpty() && !isEchoJunk(text) && passesTaskFilter(text)) {
+                onAsr(text, true)
+                if (taskMode && wantListening) {
+                    scheduleRestart(350)
+                } else {
+                    wantListening = false
+                }
+            } else if (wantListening) {
+                scheduleRestart(350)
+            }
+        }
+
+        override fun onPartialResults(partialResults: Bundle?) {
+            val text = bestResult(partialResults)
+            if (text.isNotEmpty() && !isEchoJunk(text) && passesTaskFilter(text)) {
+                Log.i(TAG, "partial='$text'")
+                onAsr(text, false)
+            }
+        }
+
+        override fun onEvent(eventType: Int, params: Bundle?) {}
+    }
+
+    companion object {
+        private const val TAG = "VibeiSpeech"
+    }
+}
+
+
+=== 3. providers.dart (AppController + providers) ===
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:oriente_commands/oriente_commands.dart';
+import 'package:oriente_domain/oriente_domain.dart';
+import 'package:oriente_platform/oriente_platform.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import 'services/activity_scope.dart';
+import 'services/attempt_trace.dart';
+import 'services/command_log.dart';
+import 'services/connectivity_service.dart';
+import 'services/gemini_vision_client.dart';
+import 'services/speech_queue_service.dart';
+import 'services/stop_spotter.dart';
+
+final orienteHostProvider = Provider<OrienteHost>((ref) => OrienteHost());
+
+final activityScopeProvider = Provider<ActivityScope>((ref) {
+  return ActivityScope(
+    ref.watch(orienteHostProvider),
+    ref.watch(speechQueueProvider),
+  );
+});
+
+final stopSpotterProvider = Provider<StopSpotter>((ref) {
+  final s = StopSpotter(ref.watch(orienteHostProvider));
+  ref.onDispose(s.dispose);
+  return s;
+});
+
+final autoFlashlightProvider =
+    StateNotifierProvider<_BoolPref, bool>((ref) {
+  return _BoolPref('autoFlashlight', true);
+});
+
+/// Always-on offline describe engine (no Settings toggle). Kept for callers.
+final offlineDescribeFallbackProvider = Provider<bool>((ref) => true);
+
+final geminiVisionClientProvider = Provider<GeminiVisionClient>((ref) {
+  return GeminiVisionClient();
+});
+
+final lastStopLatencyMsProvider = StateProvider<int?>((ref) => null);
+
+final commandLogProvider =
+    StateProvider<CommandLogEntry>((ref) => const CommandLogEntry());
+
+final attemptTraceProvider =
+    StateProvider<AttemptTrace>((ref) => AttemptTrace());
+
+/// Extra features (glasses extras, personal remember) off until core is solid.
+final coreExtrasEnabledProvider = Provider<bool>((ref) => false);
+
+/// Opens Last attempt trace from Settings.
+final showAttemptTraceProvider = StateProvider<bool>((ref) => false);
+
+final backendApiClientProvider = Provider<BackendApiClient>((ref) {
+  final client = BackendApiClient();
+  unawaited(client.loadSession().then((_) => client.refreshConfig()));
+  return client;
+});
+
+final remoteConfigProvider =
+    StateNotifierProvider<_RemoteConfigNotifier, AppRemoteConfig>((ref) {
+  return _RemoteConfigNotifier(ref.watch(backendApiClientProvider));
+});
+
+class _RemoteConfigNotifier extends StateNotifier<AppRemoteConfig> {
+  _RemoteConfigNotifier(this._client) : super(_client.config) {
+    unawaited(refresh());
+  }
+  final BackendApiClient _client;
+  Future<void> refresh() async {
+    state = await _client.refreshConfig(force: true);
+  }
+}
+
+enum OnlineFeatureStatus { available, notConfigured, offline, signedOut }
+
+final onlineFeatureStatusProvider = Provider<OnlineFeatureStatus>((ref) {
+  final online = ref.watch(connectivityOnlineProvider);
+  final cfg = ref.watch(remoteConfigProvider);
+  final client = ref.watch(backendApiClientProvider);
+  // Embedded Gemini makes detailed describe/read available without a backend.
+  if (GeminiVisionClient.isConfigured) {
+    if (!online) return OnlineFeatureStatus.offline;
+    return OnlineFeatureStatus.available;
+  }
+  if (!client.isConfigured || !cfg.aiConfigured) {
+    return OnlineFeatureStatus.notConfigured;
+  }
+  if (!online) return OnlineFeatureStatus.offline;
+  if (!client.isSignedIn) return OnlineFeatureStatus.signedOut;
+  return OnlineFeatureStatus.available;
+});
+
+final connectivityServiceProvider = Provider<ConnectivityService>((ref) {
+  final s = ConnectivityService();
+  ref.onDispose(s.dispose);
+  return s;
+});
+
+final connectivityOnlineProvider =
+    StateNotifierProvider<_OnlineFlag, bool>((ref) {
+  final n = _OnlineFlag();
+  final sub = ref.watch(connectivityServiceProvider).stream.listen(n.set);
+  ref.onDispose(sub.cancel);
+  n.set(ref.watch(connectivityServiceProvider).isOnline);
+  return n;
+});
+
+class _OnlineFlag extends StateNotifier<bool> {
+  _OnlineFlag() : super(false);
+  void set(bool v) => state = v;
+}
+
+final speechQueueProvider = Provider<SpeechQueueService>((ref) {
+  final s = SpeechQueueService(ref.watch(orienteHostProvider));
+  s.onSpeaking = (text) {
+    unawaited(ref.read(orienteHostProvider).setSpeakingText(text));
+    ref.read(stopSpotterProvider).setCurrentTts(text);
+  };
+  ref.onDispose(s.dispose);
+  return s;
+});
+
+final cloudVisionProvider = Provider<CloudVisionProvider>((ref) {
+  return BackendCloudVisionProvider(ref.watch(backendApiClientProvider));
+});
+
+final voiceUnderstandingProvider = Provider<VoiceUnderstandingProvider>((ref) {
+  return BackendVoiceUnderstandingProvider(ref.watch(backendApiClientProvider));
+});
+
+final useOnlineEnhancementsProvider =
+    StateNotifierProvider<_BoolPref, bool>((ref) {
+  return _BoolPref('useOnlineEnhancements', true);
+});
+
+final perfOverlayEnabledProvider =
+    StateNotifierProvider<_BoolPref, bool>((ref) {
+  return _BoolPref('perfOverlay', false);
+});
+
+class _BoolPref extends StateNotifier<bool> {
+  _BoolPref(this.key, bool def) : super(def) {
+    _load(def);
+  }
+  final String key;
+  Future<void> _load(bool def) async {
+    final p = await SharedPreferences.getInstance();
+    state = p.getBool(key) ?? def;
+  }
+
+  Future<void> set(bool v) async {
+    state = v;
+    final p = await SharedPreferences.getInstance();
+    await p.setBool(key, v);
+  }
+}
+
+/// When true, OrienteApp returns to the Phone vs Glasses picker.
+final forceDevicePickerProvider = StateProvider<bool>((ref) => false);
+
+final privacySettingsProvider =
+    StateNotifierProvider<PrivacySettingsNotifier, PrivacySettings>((ref) {
+  return PrivacySettingsNotifier(ref.watch(orienteHostProvider));
+});
+
+class PrivacySettingsNotifier extends StateNotifier<PrivacySettings> {
+  PrivacySettingsNotifier(this._host) : super(const PrivacySettings()) {
+    _load();
+  }
+
+  final OrienteHost _host;
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = PrivacySettings(
+      // Default ON so distributed APK can use detailed describe/read immediately.
+      onlineVisionConsent: prefs.getBool('onlineVisionConsent') ?? true,
+      onlineChatConsent: prefs.getBool('onlineChatConsent') ?? false,
+      speechRate: prefs.getDouble('speechRate') ?? 1.0,
+      speechVolume: prefs.getDouble('speechVolume') ?? 1.0,
+    );
+    await _host.setPrivacySettings(state);
+    await _host.setSpeechRate(state.speechRate);
+    await _host.setSpeechVolume(state.speechVolume);
+    await _host.setAudioFeedbackPrefs(
+      tickSound: prefs.getBool('tickSound') ?? true,
+      vibration: prefs.getBool('tickVibration') ?? true,
+    );
+  }
+
+  Future<void> update(PrivacySettings next) async {
+    state = next;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('onlineVisionConsent', next.onlineVisionConsent);
+    await prefs.setBool('onlineChatConsent', next.onlineChatConsent);
+    await prefs.setDouble('speechRate', next.speechRate);
+    await prefs.setDouble('speechVolume', next.speechVolume);
+    await _host.setPrivacySettings(next);
+    await _host.setSpeechRate(next.speechRate);
+    await _host.setSpeechVolume(next.speechVolume);
+  }
+}
+
+final feedbackPrefsProvider =
+    StateNotifierProvider<FeedbackPrefsNotifier, FeedbackPrefs>((ref) {
+  return FeedbackPrefsNotifier(ref.watch(orienteHostProvider));
+});
+
+class FeedbackPrefs {
+  const FeedbackPrefs({this.tickSound = true, this.vibration = true});
+  final bool tickSound;
+  final bool vibration;
+
+  FeedbackPrefs copyWith({bool? tickSound, bool? vibration}) => FeedbackPrefs(
+        tickSound: tickSound ?? this.tickSound,
+        vibration: vibration ?? this.vibration,
+      );
+}
+
+class FeedbackPrefsNotifier extends StateNotifier<FeedbackPrefs> {
+  FeedbackPrefsNotifier(this._host) : super(const FeedbackPrefs()) {
+    _load();
+  }
+
+  final OrienteHost _host;
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = FeedbackPrefs(
+      tickSound: prefs.getBool('tickSound') ?? true,
+      vibration: prefs.getBool('tickVibration') ?? true,
+    );
+    await _host.setAudioFeedbackPrefs(
+      tickSound: state.tickSound,
+      vibration: state.vibration,
+    );
+  }
+
+  Future<void> update(FeedbackPrefs next) async {
+    state = next;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('tickSound', next.tickSound);
+    await prefs.setBool('tickVibration', next.vibration);
+    await _host.setAudioFeedbackPrefs(
+      tickSound: next.tickSound,
+      vibration: next.vibration,
+    );
+  }
+}
+
+final capabilityProvider = FutureProvider<CapabilityReport>((ref) async {
+  return ref.watch(orienteHostProvider).getCapabilityReport();
+});
+
+enum UiPhase {
+  home,
+  listening,
+  objectSearch,
+  textSearch,
+  nearbyText,
+  nearbyObjects,
+  personalRemember,
+  documentRead,
+  describe,
+  settings,
+}
+
+class AppController extends StateNotifier<AppUiState> {
+  AppController(this._ref) : super(const AppUiState()) {
+    _bindStreams();
+  }
+
+  final Ref _ref;
+  final AppFlowMachine _flow = const AppFlowMachine();
+  OrienteHost get _host => _ref.read(orienteHostProvider);
+
+  Timer? _silenceWarn;
+  Timer? _silenceEnd;
+  StreamSubscription<AsrEvent>? _asrSub;
+  DateTime? _listenGraceUntil;
+  bool _handlingCommand = false;
+
+  AttemptTrace get _trace => _ref.read(attemptTraceProvider);
+
+  void _publishTrace() {
+    _ref.read(attemptTraceProvider.notifier).state = _trace;
+  }
+
+  bool get _acceptHomeCommand {
+    if (state.listening || state.phase == UiPhase.listening) return true;
+    final g = _listenGraceUntil;
+    return g != null && DateTime.now().isBefore(g);
+  }
+
+  void _bindStreams() {
+    _asrSub = _host.asrEvents.listen((event) async {
+      final text = event.text.trim();
+      final t = _trace;
+      t.add(
+        'kotlin_to_dart',
+        text.isNotEmpty || !event.isFinal,
+        'final=${event.isFinal} text="$text"',
+      );
+      if (!event.isFinal && text.isNotEmpty) {
+        t.rawPartial = text;
+      }
+      if (event.isFinal && text.isNotEmpty) {
+        t.rawFinal = text;
+      }
+      _publishTrace();
+
+      final executing = state.phase == UiPhase.objectSearch ||
+          state.phase == UiPhase.textSearch ||
+          state.phase == UiPhase.nearbyText ||
+          state.phase == UiPhase.nearbyObjects ||
+          state.phase == UiPhase.personalRemember ||
+          state.phase == UiPhase.documentRead ||
+          state.phase == UiPhase.describe;
+
+      if (executing) {
+        if (event.isFinal && text.isNotEmpty) {
+          await _handleTaskUtterance(text);
+        }
+        return;
+      }
+
+      // Grace: accept finals briefly after listening flag clears (early end bug).
+      if (!_acceptHomeCommand) {
+        t.add('dart_listener', false, 'dropped: not listening phase=${state.phase}');
+        _publishTrace();
+        return;
+      }
+      t.phaseAtReceive = '${state.phase}/listening=${state.listening}';
+      t.add('dart_listener', true, t.phaseAtReceive);
+      _publishTrace();
+
+      _resetSilenceTimers();
+      if (text.isEmpty) return;
+      state = state.copyWith(partialTranscript: text);
+      if (event.isFinal) {
+        await _handleUtterance(text);
+      }
+    });
+
+    _host.guidance.listen((g) {
+      if (g.announce != null && g.announce!.isNotEmpty) {
+        state = state.copyWith(statusLine: g.announce);
+      } else if (g.directionSpeech != null) {
+        state = state.copyWith(statusLine: g.directionSpeech);
+      }
+      state = state.copyWith(proximity: g.proximity, guidancePhase: g.phase);
+    });
+
+    _host.sessions.listen((s) {
+      // Do NOT auto-goHome on idle — cancel() emits idle and was killing
+      // brand-new Find/Describe sessions (stale or same-turn events).
+      if (s.error != null && s.error!.trim().isNotEmpty) {
+        state = state.copyWith(statusLine: s.error);
+      }
+    });
+  }
+
+  void _applyFlow(AppFlowEvent event) {
+    final t = _flow.reduce(
+      state: state.flow,
+      executing: state.executing,
+      event: event,
+    );
+    state = state.copyWith(flow: t.next, executing: t.executing);
+  }
+
+  void _resetSilenceTimers() {
+    _silenceWarn?.cancel();
+    _silenceEnd?.cancel();
+    if (state.phase != UiPhase.listening) return;
+    // No spoken nudge — TTS mid-listen restarts ASR and retriggers the Google beep.
+    _silenceEnd = Timer(const Duration(seconds: 30), () async {
+      if (state.phase != UiPhase.listening) return;
+      await _goHome(playEndEarcon: false, speakStopped: false);
+    });
+  }
+
+  Future<void> onBigButton() async {
+    if (state.phase == UiPhase.objectSearch ||
+        state.phase == UiPhase.textSearch ||
+        state.phase == UiPhase.nearbyText ||
+        state.phase == UiPhase.nearbyObjects ||
+        state.phase == UiPhase.personalRemember ||
+        state.phase == UiPhase.documentRead ||
+        state.phase == UiPhase.describe ||
+        state.listening ||
+        state.phase == UiPhase.listening) {
+      await cancel();
+      return;
+    }
+    _ref.read(stopSpotterProvider).disarm();
+    await _host.setSearchTicks(rateHz: 0);
+    await _host.stopSpeaking();
+    _applyFlow(AppFlowEvent.tapListen);
+    state = state.copyWith(
+      phase: UiPhase.listening,
+      listening: true,
+      partialTranscript: '',
+      statusLine: 'Listening…',
+      speechMuted: false,
+    );
+    _ref.read(commandLogProvider.notifier).state = CommandLogEntry(
+      heard: '',
+      parsed: 'listening',
+      phase: 'listening',
+      at: DateTime.now(),
+    );
+    // Spec: short haptic + short earcon, then listen until command or 30s.
+    await _host.vibrate(18);
+    await _host.playEarcon('listeningStarted');
+    await Future<void>.delayed(const Duration(milliseconds: 320));
+    if (state.phase != UiPhase.listening || !state.listening) return;
+    await _host.setTaskListening(false);
+    await _host.startListening(taskMode: false);
+    _resetSilenceTimers();
+  }
+
+  Future<void> cancel() async {
+    await _goHome(playEndEarcon: true, speakStopped: true);
+  }
+
+  Future<void> _goHome({
+    required bool playEndEarcon,
+    required bool speakStopped,
+  }) async {
+    final t0 = DateTime.now();
+    _silenceWarn?.cancel();
+    _silenceEnd?.cancel();
+    _ref.read(stopSpotterProvider).disarm();
+    await _ref.read(activityScopeProvider).cancelAll(reason: 'goHome');
+    await _ref.read(speechQueueProvider).stop();
+    await _host.stopSpeaking();
+    await _host.cancel();
+    await _host.stopListening();
+    await _host.setTaskListening(false);
+    await _host.setSearchTicks(rateHz: 0);
+    await _host.setTorch(false);
+    await _host.setKeepScreenOn(false);
+    // Skip listeningEnded earcon — same click/plop as start; haptic is enough.
+    _applyFlow(AppFlowEvent.stop);
+    state = state.copyWith(
+      phase: UiPhase.home,
+      flow: AppFlowState.home,
+      clearExecuting: true,
+      listening: false,
+      partialTranscript: '',
+      statusLine: 'Ready',
+      proximity: 0,
+      clearActiveQuery: true,
+      speechMuted: false,
+      hybridFind: false,
+      describeContinuous: false,
+      describeFromMemory: false,
+      describeOnlineDetail: false,
+    );
+    final ms = DateTime.now().difference(t0).inMilliseconds;
+    _ref.read(lastStopLatencyMsProvider.notifier).state = ms;
+    _ref.read(commandLogProvider.notifier).state = CommandLogEntry(
+      heard: state.partialTranscript,
+      parsed: 'home',
+      phase: 'home',
+      at: DateTime.now(),
+    );
+  }
+
+  static const _unknownMsg =
+      "Sorry, I didn't catch that. Try: find a bottle, describe, or read this.";
+
+  void _logCommand(String heard, String parsed) {
+    _ref.read(commandLogProvider.notifier).state = CommandLogEntry(
+      heard: heard,
+      parsed: parsed,
+      phase: state.phase.name,
+      at: DateTime.now(),
+    );
+  }
+
+  void armStopSpotter() {
+    final spotter = _ref.read(stopSpotterProvider);
+    spotter.onStop = (action) {
+      unawaited(_onStopAction(action));
+    };
+    // Delay arm so the command that started the task is not treated as "stop".
+    Future<void>.delayed(const Duration(milliseconds: 900), () {
+      if (state.phase == UiPhase.home || state.phase == UiPhase.listening) {
+        return;
+      }
+      spotter.arm();
+    });
+  }
+
+  Future<void> _onStopAction(StopAction action) async {
+    if (action == StopAction.muteSpeechOnly) {
+      state = state.copyWith(speechMuted: true);
+      await _ref.read(speechQueueProvider).stop();
+      await _host.stopSpeaking();
+      return;
+    }
+    await cancel();
+  }
+
+  Future<void> openSettings() async {
+    _applyFlow(AppFlowEvent.openSettings);
+    state = state.copyWith(
+      phase: UiPhase.settings,
+      executing: ExecutingKind.settings,
+    );
+  }
+
+  Future<void> closeSettings() async {
+    await _goHome(playEndEarcon: false, speakStopped: false);
+  }
+
+  /// Same entry point as the recognizer (Settings trace text box / adb).
+  Future<void> injectVoiceCommand(String text) async {
+    final heard = text.trim();
+    final t = _trace..clear();
+    t.rawFinal = heard;
+    t.add('inject', true, heard);
+    t.add('kotlin_to_dart', true, 'inject main-thread');
+    t.add('dart_listener', true, 'inject→listening');
+    t.phaseAtReceive = 'listening/inject';
+    _publishTrace();
+    // Pretend we are listening so grace/accept path is identical.
+    state = state.copyWith(
+      phase: UiPhase.listening,
+      flow: AppFlowState.listening,
+      listening: true,
+      statusLine: 'Listening…',
+    );
+    _listenGraceUntil = DateTime.now().add(const Duration(seconds: 3));
+    await _handleUtterance(heard);
+  }
+
+  Future<void> _handleUtterance(String text) async {
+    if (_handlingCommand) return;
+    _handlingCommand = true;
+    try {
+      _silenceWarn?.cancel();
+      _silenceEnd?.cancel();
+      await _host.stopListening();
+      final heard = text.trim();
+      // Keep a short grace so a delayed duplicate final can still land.
+      _listenGraceUntil = DateTime.now().add(const Duration(seconds: 2));
+      state = state.copyWith(
+        listening: false,
+        partialTranscript: heard,
+        statusLine: 'Heard: $heard',
+      );
+
+      const parser = IntentParser();
+      var intent = parser.parse(heard);
+      final t = _trace;
+      t.normalized = heard.toLowerCase();
+      t.intent = intent.runtimeType.toString();
+      t.target = switch (intent) {
+        ObjectSearchIntent(:final query) => query,
+        TextSearchIntent(:final query) => query,
+        HybridFindIntent(:final objectQuery) => objectQuery,
+        _ => '',
+      };
+      t.add('parsed', intent is! ClarifyIntent, '${t.intent} target=${t.target}');
+      _publishTrace();
+      _logCommand(heard, t.intent);
+
+      if (intent is ClarifyIntent) {
+        // Incomplete ASR final — keep listening; do not bounce to HOME.
+        t.flowTransition = 'clarify→stay listening';
+        _publishTrace();
+        state = state.copyWith(
+          phase: UiPhase.listening,
+          flow: AppFlowState.listening,
+          listening: true,
+          statusLine: 'Listening…',
+        );
+        await _host.startListening(taskMode: false);
+        _resetSilenceTimers();
+        return;
+      }
+
+      if (intent is UnsupportedIntent) {
+        final msg = intent.message.trim().isNotEmpty ? intent.message : _unknownMsg;
+        t.flowTransition = 'unsupported→home';
+        _publishTrace();
+        state = state.copyWith(
+          phase: UiPhase.home,
+          flow: AppFlowState.home,
+          listening: false,
+          statusLine: 'Ready',
+        );
+        await _host.speak(msg);
+        return;
+      }
+
+      // Ensure state machine is in listening before startSearch.
+      if (state.flow != AppFlowState.listening) {
+        state = state.copyWith(flow: AppFlowState.listening);
+      }
+      await _dispatch(intent);
+    } finally {
+      _handlingCommand = false;
+    }
+  }
+
+  Future<void> _handleTaskUtterance(String text) async {
+    const parser = TaskCommandParser();
+    final readCmd = parser.parseReadControl(text);
+    if (readCmd != null && state.phase == UiPhase.documentRead) {
+      state = state.copyWith(readCommand: readCmd);
+      return;
+    }
+    final intent = parser.parse(text);
+    if (intent == null) return;
+    switch (intent) {
+      case StopSpeakingIntent():
+        state = state.copyWith(speechMuted: true);
+        await _host.stopSpeaking();
+      case StopLookingIntent():
+      case StopIntent():
+      case GoBackIntent():
+        await cancel();
+      case RepeatIntent():
+        final last = state.lastSpokenGuidance;
+        if (last != null && last.isNotEmpty) {
+          await _host.speak(last, interrupt: true);
+        }
+      case KeepLookingIntent():
+        state = state.copyWith(
+          statusLine: 'Still looking for ${state.activeQuery ?? 'it'}',
+          keepLookingAck: DateTime.now(),
+        );
+      case DescribeIntent():
+        await _openDescribe();
+      default:
+        break;
+    }
+  }
+
+  Future<Map<String, String>> _personalObjects() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('personalObjects');
+    if (raw == null || raw.isEmpty) return {};
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      return map.map((k, v) => MapEntry(k, '$v'));
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<void> _dispatch(AppIntent intent) async {
+    switch (intent) {
+      case StopIntent():
+      case GoBackIntent():
+      case StopLookingIntent():
+        await cancel();
+      case StopSpeakingIntent():
+        state = state.copyWith(speechMuted: true);
+        await _ref.read(speechQueueProvider).stop();
+        await _host.stopSpeaking();
+      case KeepLookingIntent():
+        state = state.copyWith(phase: UiPhase.home, flow: AppFlowState.home);
+      case RepeatIntent():
+        final last = state.lastSpokenGuidance;
+        if (last != null && last.isNotEmpty) {
+          await _host.speak(last, interrupt: true);
+        } else {
+          await _host.speak(_unknownMsg);
+          await _goHome(playEndEarcon: false, speakStopped: false);
+        }
+      case OpenSettingsIntent():
+        await openSettings();
+        await _host.speak('Settings.');
+      case ObjectSearchIntent(:final query):
+        final personal = _ref.read(coreExtrasEnabledProvider)
+            ? await _personalObjects()
+            : <String, String>{};
+        final resolved = SupportedObjects.resolve(query, personal: personal);
+        final t = _trace;
+        if (resolved == null) {
+          t.flowTransition = 'rejected: unsupported object "$query"';
+          t.add('state_machine', false, t.flowTransition);
+          _publishTrace();
+          state = state.copyWith(
+            phase: UiPhase.home,
+            flow: AppFlowState.home,
+            statusLine: 'Ready',
+          );
+          await _host.speak("I can't look for that yet.");
+          return;
+        }
+        // Permissions before route — never open Search silently denied.
+        await Permission.microphone.request();
+        final cam = await Permission.camera.request();
+        t.cameraPermission = cam.isGranted ? 'granted' : 'denied';
+        t.add('camera_permission', cam.isGranted, t.cameraPermission);
+        _publishTrace();
+        if (!cam.isGranted) {
+          state = state.copyWith(
+            phase: UiPhase.home,
+            flow: AppFlowState.home,
+            statusLine: 'Camera permission needed',
+          );
+          await _host.speak('I need camera permission.');
+          return;
+        }
+        final before = state.flow;
+        _applyFlow(AppFlowEvent.startSearch);
+        final accepted = state.flow == AppFlowState.executing ||
+            before == AppFlowState.listening;
+        t.flowTransition = accepted
+            ? 'accepted: $before→executing search'
+            : 'rejected: flow was $before';
+        t.add('state_machine', accepted, t.flowTransition);
+        // Force navigation regardless of flow bookkeeping.
+        state = state.copyWith(
+          phase: UiPhase.objectSearch,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.search,
+          statusLine: 'Looking for $resolved',
+          activeQuery: resolved,
+          speechMuted: false,
+        );
+        t.navCalled = true;
+        t.target = resolved;
+        t.add('navigation_called', true, 'phase=objectSearch query=$resolved');
+        _publishTrace();
+        // Verify route still up after 500ms.
+        unawaited(Future<void>.delayed(const Duration(milliseconds: 500), () {
+          final still = state.phase == UiPhase.objectSearch;
+          t.navVisible = still;
+          t.add('navigation_visible', still, 'phase=${state.phase}');
+          _publishTrace();
+        }));
+        // Do not block the command path on ASR bind — Search UI must open first.
+        unawaited(() async {
+          await _host.setKeepScreenOn(true);
+          await _host.setTaskListening(true);
+          await _host.startListening(taskMode: true);
+        }());
+      case ClarifyIntent():
+      case UnsupportedIntent():
+        state = state.copyWith(
+          phase: UiPhase.home,
+          flow: AppFlowState.home,
+          statusLine: 'Ready',
+        );
+        await _host.speak(_unknownMsg);
+      case TextSearchIntent(:final query):
+        _applyFlow(AppFlowEvent.startRead);
+        state = state.copyWith(
+          phase: UiPhase.textSearch,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.textSearch,
+          statusLine: 'Looking for text $query',
+          activeQuery: query,
+          hybridFind: false,
+          speechMuted: false,
+        );
+        await _host.setKeepScreenOn(true);
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case NearbyTextIntent():
+        _applyFlow(AppFlowEvent.startRead);
+        state = state.copyWith(
+          phase: UiPhase.nearbyText,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.nearbyText,
+          statusLine: 'Nearby text',
+          speechMuted: false,
+        );
+        await _host.setKeepScreenOn(true);
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case NearbyObjectsIntent():
+        _applyFlow(AppFlowEvent.startSearch);
+        state = state.copyWith(
+          phase: UiPhase.nearbyObjects,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.nearbyObjects,
+          statusLine: 'Nearby objects',
+          speechMuted: false,
+        );
+        await _host.setKeepScreenOn(true);
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case DocumentReadIntent():
+        _applyFlow(AppFlowEvent.startRead);
+        state = state.copyWith(
+          phase: UiPhase.documentRead,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.read,
+          statusLine: 'Reading mode',
+          speechMuted: false,
+        );
+        await _host.setSearchTicks(rateHz: 0);
+        await _host.setKeepScreenOn(true);
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case HybridFindIntent(:final objectQuery, :final textQuery):
+        _applyFlow(AppFlowEvent.startSearch);
+        state = state.copyWith(
+          phase: UiPhase.textSearch,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.textSearch,
+          statusLine: 'Looking for $objectQuery',
+          activeQuery: textQuery,
+          secondaryQuery: objectQuery,
+          hybridFind: true,
+          speechMuted: false,
+        );
+        await _host.setKeepScreenOn(true);
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case DescribeDetailIntent():
+        await _openDescribe(onlineDetail: true);
+      case DescribeIntent(:final continuous, :final fromMemory):
+        await _openDescribe(
+          continuous: continuous,
+          fromMemory: fromMemory,
+        );
+      case NarrationIntent():
+        await _openDescribe(continuous: true);
+      case IdentifyIntent():
+        // Offline: announce dominant objects/text in view.
+        _applyFlow(AppFlowEvent.startSearch);
+        state = state.copyWith(
+          phase: UiPhase.nearbyObjects,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.nearbyObjects,
+          statusLine: 'What is that',
+          speechMuted: false,
+        );
+        await _host.setKeepScreenOn(true);
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case PersonalRememberIntent(:final name):
+        if (!_ref.read(coreExtrasEnabledProvider)) {
+          await _host.speak(_unknownMsg);
+          await _goHome(playEndEarcon: false, speakStopped: false);
+          return;
+        }
+        _applyFlow(AppFlowEvent.startSearch);
+        state = state.copyWith(
+          phase: UiPhase.personalRemember,
+          flow: AppFlowState.executing,
+          executing: ExecutingKind.personal,
+          statusLine: 'Remember personal object',
+          activeQuery: name,
+          speechMuted: false,
+        );
+        await _host.setTaskListening(true);
+        await _host.startListening(taskMode: true);
+      case OnlineChatIntent():
+        await _host.speak("I can't answer that right now.");
+        state = state.copyWith(phase: UiPhase.home, flow: AppFlowState.home);
+    }
+  }
+
+  Future<void> _openDescribe({
+    bool continuous = true,
+    bool fromMemory = false,
+    bool onlineDetail = false,
+  }) async {
+    // Default describe is a continuous loop until Stop (NYOTA §4).
+    final loop = onlineDetail ? false : (fromMemory ? false : true);
+    _applyFlow(AppFlowEvent.startDescribe);
+    state = state.copyWith(
+      phase: UiPhase.describe,
+      flow: AppFlowState.executing,
+      executing: ExecutingKind.describe,
+      statusLine: onlineDetail ? 'Detailed describe' : 'Surroundings',
+      speechMuted: false,
+      describeContinuous: loop || continuous,
+      describeFromMemory: fromMemory,
+      describeOnlineDetail: onlineDetail,
+    );
+    await _host.setSearchTicks(rateHz: 0);
+    await _host.setTaskListening(true);
+    await _host.startListening(taskMode: true);
+  }
+
+  void noteSpokenGuidance(String phrase) {
+    state = state.copyWith(lastSpokenGuidance: phrase);
+  }
+
+  void rememberRoom(String phrase) {
+    final mem = [...state.roomMemory, phrase];
+    state = state.copyWith(roomMemory: mem.length > 40 ? mem.sublist(mem.length - 40) : mem);
+  }
+
+  String roomMemorySummary() {
+    if (state.roomMemory.isEmpty) {
+      return 'I have not noted objects in this room yet.';
+    }
+    return 'In this room I have seen ${state.roomMemory.join(' ')}';
+  }
+
+  void setSpeechMuted(bool muted) {
+    state = state.copyWith(speechMuted: muted);
+  }
+
+  void clearReadCommand() {
+    state = state.copyWith(clearReadCommand: true);
+  }
+
+  @override
+  void dispose() {
+    _silenceWarn?.cancel();
+    _silenceEnd?.cancel();
+    _asrSub?.cancel();
+    super.dispose();
+  }
+}
+
+class AppUiState {
+  const AppUiState({
+    this.phase = UiPhase.home,
+    this.flow = AppFlowState.home,
+    this.executing,
+    this.listening = false,
+    this.partialTranscript = '',
+    this.statusLine = 'Ready',
+    this.activeQuery,
+    this.secondaryQuery,
+    this.hybridFind = false,
+    this.proximity = 0,
+    this.guidancePhase = GuidancePhase.searching,
+    this.speechMuted = false,
+    this.lastSpokenGuidance,
+    this.keepLookingAck,
+    this.describeContinuous = false,
+    this.describeFromMemory = false,
+    this.describeOnlineDetail = false,
+    this.readCommand,
+    this.roomMemory = const [],
+  });
+
+  final UiPhase phase;
+  final AppFlowState flow;
+  final ExecutingKind? executing;
+  final bool listening;
+  final String partialTranscript;
+  final String statusLine;
+  final String? activeQuery;
+  final String? secondaryQuery;
+  final bool hybridFind;
+  final double proximity;
+  final GuidancePhase guidancePhase;
+  final bool speechMuted;
+  final String? lastSpokenGuidance;
+  final DateTime? keepLookingAck;
+  final bool describeContinuous;
+  final bool describeFromMemory;
+  final bool describeOnlineDetail;
+  final String? readCommand;
+  final List<String> roomMemory;
+
+  AppUiState copyWith({
+    UiPhase? phase,
+    AppFlowState? flow,
+    ExecutingKind? executing,
+    bool clearExecuting = false,
+    bool? listening,
+    String? partialTranscript,
+    String? statusLine,
+    String? activeQuery,
+    bool clearActiveQuery = false,
+    String? secondaryQuery,
+    bool? hybridFind,
+    double? proximity,
+    GuidancePhase? guidancePhase,
+    bool? speechMuted,
+    String? lastSpokenGuidance,
+    DateTime? keepLookingAck,
+    bool? describeContinuous,
+    bool? describeFromMemory,
+    bool? describeOnlineDetail,
+    String? readCommand,
+    bool clearReadCommand = false,
+    List<String>? roomMemory,
+  }) {
+    return AppUiState(
+      phase: phase ?? this.phase,
+      flow: flow ?? this.flow,
+      executing: clearExecuting ? null : (executing ?? this.executing),
+      listening: listening ?? this.listening,
+      partialTranscript: partialTranscript ?? this.partialTranscript,
+      statusLine: statusLine ?? this.statusLine,
+      activeQuery:
+          clearActiveQuery ? null : (activeQuery ?? this.activeQuery),
+      secondaryQuery: secondaryQuery ?? this.secondaryQuery,
+      hybridFind: hybridFind ?? this.hybridFind,
+      proximity: proximity ?? this.proximity,
+      guidancePhase: guidancePhase ?? this.guidancePhase,
+      speechMuted: speechMuted ?? this.speechMuted,
+      lastSpokenGuidance: lastSpokenGuidance ?? this.lastSpokenGuidance,
+      keepLookingAck: keepLookingAck ?? this.keepLookingAck,
+      describeContinuous: describeContinuous ?? this.describeContinuous,
+      describeFromMemory: describeFromMemory ?? this.describeFromMemory,
+      describeOnlineDetail: describeOnlineDetail ?? this.describeOnlineDetail,
+      readCommand: clearReadCommand ? null : (readCommand ?? this.readCommand),
+      roomMemory: roomMemory ?? this.roomMemory,
+    );
+  }
+}
+
+final appControllerProvider =
+    StateNotifierProvider<AppController, AppUiState>((ref) {
+  return AppController(ref);
+});
+
+
+=== 4. intent_parser.dart ===
+import 'package:oriente_domain/oriente_domain.dart';
+
+import 'fuzzy.dart';
+
+/// Forgiving offline keyword + fuzzy intent parser (natural speech).
+class IntentParser {
+  const IntentParser({
+    this.onlineChatConsent = false,
+    this.onlineAvailable = false,
+  });
+
+  final bool onlineChatConsent;
+  final bool onlineAvailable;
+
+  static const _stopPhrases = [
+    'stop',
+    'cancel',
+    'quit',
+    'enough',
+    'never mind',
+    'nevermind',
+  ];
+
+  static const _findVerbs = [
+    'i am looking for',
+    "i'm looking for",
+    'im looking for',
+    'looking for my',
+    'looking for the',
+    'looking for a',
+    'looking for an',
+    'looking for',
+    'show me where',
+    'search for my',
+    'search for the',
+    'search for a',
+    'search for an',
+    'search for',
+    'search my',
+    'search the',
+    'search a',
+    'search',
+    'look for my',
+    'look for the',
+    'look for a',
+    'look for an',
+    'look for',
+    'look at my',
+    'look at the',
+    'look at a',
+    'look at',
+    'look my',
+    'look the',
+    'look a',
+    'look an',
+    'look',
+    'find my',
+    'find the',
+    'find a',
+    'find an',
+    'find',
+    'locate my',
+    'locate the',
+    'locate a',
+    'locate',
+    'where are my',
+    'where are the',
+    'where are',
+    'where is my',
+    'where is the',
+    'where is a',
+    'where is',
+    "where's my",
+    "where's the",
+    "where's a",
+    "where's",
+    'wheres my',
+    'wheres the',
+    'wheres a',
+    'wheres',
+    'do you see',
+    'is there',
+  ];
+
+  AppIntent parse(String raw) {
+    var text = _normalize(raw);
+    if (text.isEmpty) {
+      return const ClarifyIntent('I did not catch that. Please say it again.');
+    }
+
+    text = _stripFillers(text);
+
+    if (_matchesAny(text, const [
+      'stop speaking',
+      'be quiet',
+      'mute',
+    ])) {
+      return const StopSpeakingIntent();
+    }
+    if (_matchesAny(text, const ['stop looking', 'stop searching'])) {
+      return const StopLookingIntent();
+    }
+    if (_matchesAny(text, const ['keep looking', 'keep searching'])) {
+      return const KeepLookingIntent();
+    }
+    if (_matchesAny(text, const ['repeat', 'say again'])) {
+      return const RepeatIntent();
+    }
+
+    // Bare stop — but not "stop sign" / find-stop targets.
+    if (_matchesAny(text, _stopPhrases) &&
+        !text.contains('stop sign') &&
+        !RegExp(r'\b(find|look|search|where)\b').hasMatch(text)) {
+      return const StopIntent();
+    }
+    if (_matchesAny(text, const ['go back', 'back', 'home'])) {
+      return const GoBackIntent();
+    }
+    if (_matchesAny(text, const ['settings', 'open settings', 'preferences'])) {
+      return const OpenSettingsIntent();
+    }
+
+    // FIND TEXT phrases.
+    if (_containsAny(text, const [
+      'look for the sign that says',
+      'find the sign that says',
+      'sign that says',
+      'find the word',
+      'find the text',
+      'find word',
+      'find text',
+      'search for the word',
+      'search for text',
+      'search text',
+      'look for text',
+      'look for the word',
+      'find text that says',
+      'find text saying',
+      'text that says',
+      'text saying',
+    ])) {
+      final q = _extractAfter(text, const [
+            'look for the sign that says',
+            'find the sign that says',
+            'sign that says',
+            'find text that says',
+            'find text saying',
+            'text that says',
+            'text saying',
+            'find the word',
+            'find the text',
+            'look for the word',
+            'search for the word',
+            'find word',
+            'search for text',
+            'look for text',
+            'search text',
+            'find text',
+          ]) ??
+          '';
+      if (q.trim().isEmpty) {
+        return const ClarifyIntent('Which word should I find?');
+      }
+      return TextSearchIntent(q.trim());
+    }
+
+    if (_containsAny(text, const [
+      'describe in detail',
+      'describe more clearly',
+      'give me a full description',
+      'full description',
+      'more detail',
+    ])) {
+      return const DescribeDetailIntent();
+    }
+
+    if (_containsAny(text, const [
+      'what is that',
+      "what's that",
+      'whats that',
+      'identify this',
+      'identify that',
+      'what am i looking at',
+    ])) {
+      return const IdentifyIntent();
+    }
+
+    if (_containsAny(text, const [
+      'describe my surroundings',
+      'describe surroundings',
+      'describe what is in front',
+      'describe what you see',
+      'describe the scene',
+      'describe around me',
+      'what is in front of me',
+      "what's in front of me",
+      'whats in front of me',
+      'what is around me',
+      "what's around me",
+      'whats around me',
+      'tell me what you see',
+      'what do you see',
+      'look around',
+      'keep describing',
+      'describe',
+      'narrate',
+    ])) {
+      return const DescribeIntent(continuous: true);
+    }
+
+    if (_containsAny(text, const [
+      'read this page',
+      'read the page',
+      'read this document',
+      'read the document',
+      'read it to me',
+      'read the text',
+      'read this for me',
+      'read this',
+      'read that',
+      'read it',
+      'start reading',
+      'scan this page',
+      'read something',
+      'read text',
+      'read the label',
+      'read label',
+      'what does it say',
+      'whats it say',
+      "what's it say",
+    ])) {
+      return const DocumentReadIntent();
+    }
+
+    if (_containsAny(text, const [
+      'nearby text',
+      'near by text',
+      'read signs',
+      'read labels',
+      'what text is nearby',
+      'read nearby text',
+      'texts nearby',
+      'text nearby',
+      'any text nearby',
+      "what's the text here",
+      'whats the text here',
+      'what is the text here',
+    ])) {
+      return const NearbyTextIntent();
+    }
+
+    if (_containsAny(text, const [
+      'nearby objects',
+      'near by objects',
+      'objects nearby',
+      'what objects are nearby',
+      'objects around me',
+      'things nearby',
+    ])) {
+      return const NearbyObjectsIntent();
+    }
+
+    // FIND object / hybrid.
+    final objectQuery = _extractAfter(text, _findVerbs);
+    if (objectQuery != null) {
+      var q = _stripArticles(objectQuery.trim());
+      if (q.isEmpty) {
+        return const ClarifyIntent('What should I look for?');
+      }
+      if (_startsWithAny(q, const ['word', 'text', 'label'])) {
+        final rest = q.replaceFirst(RegExp(r'^(word|text|label)\s+'), '');
+        if (rest.isNotEmpty) return TextSearchIntent(rest);
+      }
+      final hybrid = _hybridFind(q);
+      if (hybrid != null) return hybrid;
+
+      final resolved = SupportedObjects.resolve(q);
+      if (resolved != null) {
+        return ObjectSearchIntent(resolved);
+      }
+      // Fuzzy / alias noun still present → unsupported object (spoken by controller).
+      if (_hasNoun(q)) {
+        return UnsupportedIntent('I can\'t look for that yet.');
+      }
+      return TextSearchIntent(q);
+    }
+
+    if (_looksConversational(text)) {
+      if (onlineAvailable && onlineChatConsent) {
+        return OnlineChatIntent(raw.trim());
+      }
+      return const UnsupportedIntent(
+        "Sorry, I didn't catch that. Try: find a bottle, describe, or read this.",
+      );
+    }
+
+    return const ClarifyIntent(
+      "Sorry, I didn't catch that. Try: find a bottle, describe, or read this.",
+    );
+  }
+
+  String _normalize(String raw) {
+    return raw
+        .toLowerCase()
+        .replaceAll("'", '') // where's → wheres (matched by wheres prefixes)
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+  }
+
+  String _stripFillers(String text) {
+    var t = text;
+    for (var i = 0; i < 6; i++) {
+      final next = t
+          .replaceFirst(
+            RegExp(
+              r'^(hello|hi|hey|okay|ok|please|excuse me|thanks|thank you)[, ]+',
+            ),
+            '',
+          )
+          .replaceFirst(
+            RegExp(
+              r'^(can you|could you|would you|will you|can u)\s+',
+            ),
+            '',
+          )
+          .replaceFirst(
+            RegExp(
+              r'^(i want to|i need to|help me|i wanna)\s+',
+            ),
+            '',
+          )
+          .replaceFirst(RegExp(r'\s+for me$'), '')
+          .replaceFirst(RegExp(r'\s+please$'), '')
+          .replaceFirst(RegExp(r'\s+thanks$'), '')
+          .trim();
+      if (next == t) break;
+      t = next;
+    }
+    return t;
+  }
+
+  String _stripArticles(String q) {
+    return q
+        .replaceFirst(RegExp(r'^(a|an|the|my|this|that)\s+'), '')
+        .replaceFirst(RegExp(r'^(a|an|the|my|this|that)\s+'), '')
+        .replaceFirst(RegExp(r'\s+(is|are|was|were)$'), '')
+        .trim();
+  }
+
+  bool _hasNoun(String q) {
+    final parts = q.split(' ').where((e) => e.length > 1).toList();
+    return parts.isNotEmpty;
+  }
+
+  bool _matchesAny(String text, List<String> phrases) {
+    for (final p in phrases) {
+      if (text == p || fuzzyEquals(text, p, threshold: 0.88)) return true;
+    }
+    return false;
+  }
+
+  bool _containsAny(String text, List<String> phrases) {
+    for (final p in phrases) {
+      if (text.contains(p)) return true;
+      if (bestFuzzyScore(p, text) >= 0.9) return true;
+    }
+    return false;
+  }
+
+  bool _startsWithAny(String text, List<String> prefixes) {
+    for (final p in prefixes) {
+      if (text == p || text.startsWith('$p ')) return true;
+    }
+    return false;
+  }
+
+  String? _extractAfter(String text, List<String> prefixes) {
+    // Longest prefix first.
+    final sorted = [...prefixes]..sort((a, b) => b.length.compareTo(a.length));
+    for (final p in sorted) {
+      if (text == p) return '';
+      if (text.startsWith('$p ')) {
+        return text.substring(p.length).trim();
+      }
+      if (text.startsWith(p) && text.length > p.length) {
+        return text.substring(p.length).trim();
+      }
+      final idx = text.indexOf(' $p ');
+      if (idx >= 0) {
+        return text.substring(idx + p.length + 2).trim();
+      }
+      if (text.endsWith(' $p')) return '';
+    }
+    return null;
+  }
+
+  bool _looksConversational(String text) {
+    const starters = [
+      'why',
+      'how',
+      'who',
+      'when',
+      'please tell',
+      'explain',
+      'tell me about',
+      'what do you think',
+      'help me understand',
+    ];
+    for (final s in starters) {
+      if (text.startsWith(s)) return true;
+    }
+    final words = text.split(' ');
+    return words.length >= 10;
+  }
+
+  HybridFindIntent? _hybridFind(String q) {
+    final n = q.toLowerCase().trim();
+    if (n == 'stop sign' ||
+        n == 'a stop sign' ||
+        n == 'the stop sign' ||
+        n == 'stop signs') {
+      return const HybridFindIntent(
+        objectQuery: 'stop sign',
+        textQuery: 'stop',
+      );
+    }
+    return null;
+  }
+}
+
+
+=== 5. logcat ===
+PHONE NOT CONNECTED (adb devices empty). Cannot capture new failed tap/say attempt.
+Below: saved app-pid log from 2026-11-15 inject session (proof\logcat_find_bottle.txt) — filtered VibeiSpeech/flutter/CameraX/Looking:
+11-15 17:45:15.924 18436 18436 W VibeiSpeech: ASR error code=7 taskMode=true want=true
+11-15 17:45:16.325 18436 18436 I VibeiSpeech: beginListen taskMode=true
+11-15 17:45:16.402 18436 18436 I VibeiSpeech: onReadyForSpeech
+11-15 17:45:18.923 18436 18436 W VibeiSpeech: ASR error code=7 taskMode=true want=true
+11-15 17:45:19.323 18436 18436 I VibeiSpeech: beginListen taskMode=true
+11-15 17:45:19.398 18436 18436 I VibeiSpeech: onReadyForSpeech
+11-15 17:45:21.068 18436 18436 I VibeiSpeech: onBeginningOfSpeech
+11-15 17:45:21.932 18436 18436 W VibeiSpeech: ASR error code=7 taskMode=true want=true
+11-15 17:45:22.332 18436 18436 I VibeiSpeech: beginListen taskMode=true
+11-15 17:45:22.463 18436 18436 I VibeiSpeech: onReadyForSpeech
+11-15 17:45:23.407 18436 18436 W VibeiSpeech: ASR error code=5 taskMode=false want=false
+11-15 17:45:23.419 18436 18436 W VibeiSpeech: ASR error code=5 taskMode=false want=false
+11-15 17:45:23.441 18436 18991 D CameraStateMachine: New public camera state CameraState{type=CLOSING, error=null} from CLOSING and null
+11-15 17:45:23.442 18436 18991 D CameraStateMachine: Publishing new public camera state CameraState{type=CLOSING, error=null}
+11-15 17:45:23.459 18436 18436 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=false callback=io.flutter.embedding.android.FlutterActivity$1@19b2db4
+11-15 17:45:23.796 18436 18989 D CameraStateMachine: New public camera state CameraState{type=CLOSED, error=null} from CLOSED and null
+11-15 17:45:23.796 18436 18989 D CameraStateMachine: Publishing new public camera state CameraState{type=CLOSED, error=null}
+11-15 17:45:27.291 18436 18436 I VibeiSpeech: beginListen taskMode=false
+11-15 17:45:27.332 18436 18436 I VibeiSpeech: onReadyForSpeech
+11-15 17:45:28.676 18436 18436 I VibeiSpeech: onBeginningOfSpeech
+11-15 17:45:29.712 18436 18436 I VibeiSpeech: partial='look'
+11-15 17:45:29.774 18436 18436 I VibeiSpeech: partial='look'
+11-15 17:45:29.789 18436 18436 I VibeiSpeech: partial='look for'
+11-15 17:45:30.077 18436 18436 I VibeiSpeech: partial='look for a'
+11-15 17:45:30.725 18436 18436 I VibeiSpeech: partial='look for a bottle'
+11-15 17:45:32.817 18436 18436 I VibeiSpeech: onBeginningOfSpeech
+11-15 17:45:33.840 18436 18436 I VibeiSpeech: partial=' look'
+11-15 17:45:33.933 18436 18436 I VibeiSpeech: partial=' look for'
+11-15 17:45:34.906 18436 18436 I VibeiSpeech: partial=' look for abor to'
+11-15 17:45:35.007 18436 18436 W VibeiSpeech: ASR error code=5 taskMode=false want=false
+11-15 17:45:35.014 18436 18436 W VibeiSpeech: ASR error code=5 taskMode=false want=false
+
+=== 6a. pubspec.yaml ===
+name: oriente_app
+description: VIVEI — camera and voice guidance for blind and low-vision users.
+publish_to: none
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.10.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  flutter_riverpod: ^2.6.1
+  permission_handler: ^12.0.1
+  shared_preferences: ^2.5.3
+  path_provider: ^2.1.5
+  oriente_domain:
+    path: ../../packages/oriente_domain
+  oriente_commands:
+    path: ../../packages/oriente_commands
+  oriente_platform:
+    path: ../../packages/oriente_platform
+  oriente_native:
+    path: ../../packages/oriente_native
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.3
+  flutter_native_splash: ^2.4.4
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: assets/images/brand_logo.png
+  adaptive_icon_background: "#0B1020"
+  adaptive_icon_foreground: assets/images/brand_logo.png
+  adaptive_icon_foreground_inset: 18
+  min_sdk_android: 21
+
+flutter_native_splash:
+  color: "#0B1020"
+  image: assets/images/brand_logo.png
+  android: true
+  ios: false
+  android_12:
+    color: "#0B1020"
+    image: assets/images/brand_logo.png
+    icon_background_color: "#0B1020"
+
+flutter:
+  uses-material-design: true
+  generate: true
+  assets:
+    - assets/branding/vibei_logo.png
+    - assets/images/brand_logo.png
+    - assets/images/option_glasses.png
+    - assets/images/option_phone.png
+  fonts:
+    - family: AtkinsonHyperlegible
+      fonts:
+        - asset: assets/fonts/AtkinsonHyperlegible-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/AtkinsonHyperlegible-Bold.ttf
+          weight: 700
+
+=== 6b. AndroidManifest.xml ===
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
+
+    <application
+        android:label="@string/app_name"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data
+              android:name="io.flutter.embedding.android.NormalTheme"
+              android:resource="@style/NormalTheme"
+              />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT"/>
+            <data android:mimeType="text/plain"/>
+        </intent>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+</manifest>
+
+=== 6c. app/build.gradle.kts ===
+plugins {
+    id("com.android.application")
+    id("kotlin-android")
+    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
+    id("dev.flutter.flutter-gradle-plugin")
+}
+
+import java.util.Properties
+import java.io.FileInputStream
+
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
+}
+
+android {
+    namespace = "com.oriente.oriente_app"
+    compileSdk = flutter.compileSdkVersion
+    ndkVersion = flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17.toString()
+    }
+
+    defaultConfig {
+        applicationId = "com.oriente.oriente_app"
+        minSdk = 26
+        targetSdk = flutter.targetSdkVersion
+        versionCode = flutter.versionCode
+        versionName = flutter.versionName
+    }
+
+    signingConfigs {
+        create("release") {
+            if (keystorePropertiesFile.exists()) {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            signingConfig = if (keystorePropertiesFile.exists()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
+    }
+}
+
+flutter {
+    source = "../.."
+}
+
+dependencies {
+    // XSX AI Glass SDK (packaged in the app; oriente_native compiles against them).
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("org.greenrobot:eventbus:3.3.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("com.squareup.retrofit2:retrofit:2.11.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.11.0")
+    implementation("com.squareup.retrofit2:adapter-rxjava2:2.11.0")
+    implementation("io.reactivex.rxjava2:rxjava:2.2.21")
+    implementation("io.reactivex.rxjava2:rxandroid:2.1.1")
+    implementation("androidx.multidex:multidex:2.0.1")
+}
+
+=== 6d. oriente_native/android/build.gradle dependencies ===
+group = "com.oriente.oriente_native"
+version = "1.0-SNAPSHOT"
+
+buildscript {
+    ext.kotlin_version = "2.2.20"
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        classpath("com.android.tools.build:gradle:8.11.1")
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version")
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+apply plugin: "kotlin-android"
+
+android {
+    namespace = "com.oriente.oriente_native"
+
+    compileSdk = 36
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = JavaVersion.VERSION_17
+    }
+
+    sourceSets {
+        main.java.srcDirs += "src/main/kotlin"
+        test.java.srcDirs += "src/test/kotlin"
+    }
+
+    defaultConfig {
+        minSdk = 26
+    }
+
+    dependencies {
+        testImplementation("org.jetbrains.kotlin:kotlin-test")
+        testImplementation("org.mockito:mockito-core:5.0.0")
+    }
+
+    testOptions {
+        unitTests.all {
+            useJUnitPlatform()
+
+            testLogging {
+               events "passed", "skipped", "failed", "standardOut", "standardError"
+               outputs.upToDateWhen {false}
+               showStandardStreams = true
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir { dirs 'libs' }
+}
+
+dependencies {
+    implementation("androidx.camera:camera-core:1.4.2")
+    implementation("androidx.camera:camera-camera2:1.4.2")
+    implementation("androidx.camera:camera-lifecycle:1.4.2")
+    implementation("androidx.camera:camera-view:1.4.2")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("com.google.mediapipe:tasks-vision:0.10.21")
+    // On-device OCR (bundled Latin model; works offline after first Play Services resolve).
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+    // Vosk for guaranteed offline ASR when model is present (Apache-2.0).
+    implementation("com.alphacephei:vosk-android:0.3.47") {
+        exclude group: "net.java.dev.jna", module: "jna"
+    }
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+
+    // XSX AI Glass SDK — compileOnly here; the app module packages the AARs.
+    compileOnly(fileTree(dir: "libs", include: ["*.aar", "*.jar"]))
+    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.multidex:multidex:2.0.1")
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("org.greenrobot:eventbus:3.3.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okhttp3:logging-interceptor:4.12.0")
+    implementation("com.squareup.retrofit2:retrofit:2.11.0")
+    implementation("com.squareup.retrofit2:converter-gson:2.11.0")
+    implementation("com.squareup.retrofit2:adapter-rxjava2:2.11.0")
+    implementation("io.reactivex.rxjava2:rxjava:2.2.21")
+    implementation("io.reactivex.rxjava2:rxandroid:2.1.1")
+}
+
+
+=== 7. FILE TREE WITH LINE COUNTS ===
+=== apps/oriente_app/lib/ ===
+     2 branding\app_name.dart
+     7 branding\brand_assets.dart
+   179 design\theme.dart
+    51 design\theme_controller.dart
+    53 design\tokens.dart
+    26 l10n\app_en.arb
+   228 l10n\app_localizations.dart
+    58 l10n\app_localizations_en.dart
+   297 main.dart
+   936 providers.dart
+   363 screens\describe_screen.dart
+   183 screens\device_source_screen.dart
+   284 screens\document_read_screen.dart
+   242 screens\glasses_config_screen.dart
+   314 screens\glasses_pair_screen.dart
+   135 screens\home_screen.dart
+   147 screens\last_attempt_trace_screen.dart
+   190 screens\nearby_objects_screen.dart
+   340 screens\object_search_screen.dart
+   158 screens\personal_object_screen.dart
+   521 screens\settings_screen.dart
+   265 screens\setup_screen.dart
+   435 screens\text_vision_screen.dart
+    93 services\activity_scope.dart
+    49 services\attempt_trace.dart
+    44 services\auto_torch.dart
+    29 services\command_log.dart
+    92 services\connectivity_service.dart
+    63 services\detection_recorder.dart
+    56 services\frame_stream_session.dart
+   112 services\gemini_vision_client.dart
+    94 services\speech_queue_service.dart
+    91 services\stop_spotter.dart
+     2 theme.dart
+    16 widgets\connectivity_indicator.dart
+   469 widgets\design\branded_image.dart
+   162 widgets\design\camera_task_scaffold.dart
+   637 widgets\design\components.dart
+    23 widgets\native_camera_preview.dart
+    61 widgets\perf_overlay.dart
+=== packages/oriente_native/.../kotlin/ ===
+   219 com\oriente\oriente_native\audio\AudioFeedbackModule.kt
+   195 com\oriente\oriente_native\camera\CameraModule.kt
+    25 com\oriente\oriente_native\camera\CameraPreviewFactory.kt
+   242 com\oriente\oriente_native\glasses\GlassesModule.kt
+   172 com\oriente\oriente_native\guidance\GuidanceModule.kt
+    91 com\oriente\oriente_native\objectsearch\ObjectSearchSession.kt
+   150 com\oriente\oriente_native\ocr\OcrModule.kt
+   734 com\oriente\oriente_native\OrienteNativePlugin.kt
+    63 com\oriente\oriente_native\pipeline\FrameContext.kt
+   337 com\oriente\oriente_native\pipeline\FrameHub.kt
+   370 com\oriente\oriente_native\speech\SpeechModule.kt
+   174 com\oriente\oriente_native\vision\CableDetectorModule.kt
+   160 com\oriente\oriente_native\vision\VisionModule.kt

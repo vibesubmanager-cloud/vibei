@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: vibei-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: flask --app wsgi db upgrade && gunicorn -c gunicorn.conf.py wsgi:app
+    healthCheckPath: /healthz
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SECRET_KEY
+        generateValue: true
+      - key: MASTER_ENCRYPTION_KEY
+        generateValue: true
+      - key: ADMIN_BOOTSTRAP_TOKEN
+        sync: false
+      - key: FLASK_ENV
+        value: production
+      - key: ADMIN_CORS_ORIGINS
+        sync: false

@@ -1,0 +1,38 @@
+﻿
+  ACTIVITY com.comm.globalsearch/.MainActivity 712cbfc pid=30974 userId=0 uid=10210 displayId=0(type=INTERNAL)
+    Local Activity a022b6e State:
+      mCurrentConfig={1.0 ?mcc0mnc [en_IN] ldltr sw360dp w360dp h800dp 320dpi nrml long port finger -keyb/v/h -nav/h 
+winConfig={ mBounds=Rect(0, 0 - 720, 1600) mAppBounds=Rect(0, 0 - 720, 1600) mMaxBounds=Rect(0, 0 - 720, 1600) 
+mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=standard mAlwaysOnTop=undefined 
+mRotation=ROTATION_0} as.2 s.2 fontWeightAdjustment=0}
+          mHost=android.app.Activity$HostCallbacks@ef1dea6
+              mHost=android.app.Activity$HostCallbacks@ef1dea6
+        mHost=android.app.Activity$HostCallbacks@ef1dea6
+        mContainer=android.app.Activity$HostCallbacks@ef1dea6
+      mLastReportedMergedConfiguration={mGlobalConfig={1.0 ?mcc0mnc [en_IN] ldltr sw360dp w360dp h800dp 320dpi nrml 
+long port finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 720, 1600) mAppBounds=Rect(0, 0 - 720, 1600) 
+mMaxBounds=Rect(0, 0 - 720, 1600) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=undefined 
+mAlwaysOnTop=undefined mRotation=ROTATION_0} as.2 s.149 fontWeightAdjustment=0} mOverrideConfig={1.0 ?mcc0mnc [en_IN] 
+ldltr sw360dp w360dp h800dp 320dpi nrml long port finger -keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 720, 1600) 
+mAppBounds=Rect(0, 0 - 720, 1600) mMaxBounds=Rect(0, 0 - 720, 1600) mDisplayRotation=ROTATION_0 
+mWindowingMode=fullscreen mActivityType=standard mAlwaysOnTop=undefined mRotation=ROTATION_0} as.2 s.2 
+fontWeightAdjustment=0}}
+      mLastConfigurationFromResources={1.0 ?mcc0mnc [en_IN] ldltr sw360dp w360dp h800dp 320dpi nrml long port finger 
+-keyb/v/h -nav/h winConfig={ mBounds=Rect(0, 0 - 720, 1600) mAppBounds=Rect(0, 0 - 720, 1600) mMaxBounds=Rect(0, 0 - 
+720, 1600) mDisplayRotation=ROTATION_0 mWindowingMode=fullscreen mActivityType=standard mAlwaysOnTop=undefined 
+mRotation=ROTATION_0} as.2 s.2 fontWeightAdjustment=0}
+      mLastReportedActivityWindowInfo=ActivityWindowInfo{isEmbedded=false, taskBounds=Rect(0, 0 - 720, 1600), 
+taskFragmentBounds=Rect(0, 0 - 720, 1600)}
+       mInputChannel: 93cf6f4 com.comm.globalsearch/com.comm.globalsearch.MainActivity
+          mChannel = 93cf6f4 com.comm.globalsearch/com.comm.globalsearch.MainActivity
+        Top Callback: android.app.Activity$$ExternalSyntheticLambda0@42d0efc
+          Callback: android.app.Activity$$ExternalSyntheticLambda0@42d0efc Priority=-1
+      com.android.internal.policy.DecorView{e967b3d I.E...... R.....ID 0,0-720,1600 aid=1}[MainActivity]
+          context: com.comm.globalsearch.MainActivity@a022b6e
+    Local FragmentActivity a022b6e State:
+      mHost=androidx.fragment.app.FragmentActivity$HostCallbacks@a7fa45
+      mContainer=androidx.fragment.app.FragmentActivity$HostCallbacks@a7fa45
+  ACTIVITY com.snapchat.android/.LandingPageActivity 6029734 pid=(not running) userId=0 uid=10254 
+displayId=0(type=INTERNAL)
+
+

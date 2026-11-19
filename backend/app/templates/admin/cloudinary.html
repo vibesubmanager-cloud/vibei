@@ -1,0 +1,19 @@
+{% extends "admin/base.html" %}
+{% block title %}Cloudinary{% endblock %}
+{% block body %}
+<h1>Cloudinary</h1>
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Cloud name</label>
+  <input name="cloud_name" value="{{ cloud_name }}">
+  <label>API key {% if api_key_masked %}(saved {{ api_key_masked }}){% endif %}</label>
+  <input name="api_key" type="password" placeholder="Leave blank to keep">
+  <label>API secret {% if api_secret_masked %}(saved {{ api_secret_masked }}){% endif %}</label>
+  <input name="api_secret" type="password" placeholder="Leave blank to keep">
+  <p class="row" style="margin-top:16px">
+    <button type="submit">Save</button>
+    <button type="button" class="secondary" data-test-cloudinary="{{ url_for('admin.cloudinary_test') }}">Test upload</button>
+  </p>
+  <pre data-cloudinary-result></pre>
+</form>
+{% endblock %}

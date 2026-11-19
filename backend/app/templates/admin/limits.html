@@ -1,0 +1,15 @@
+{% extends "admin/base.html" %}
+{% block title %}Limits{% endblock %}
+{% block body %}
+<h1>Limits</h1>
+<form method="post" class="card">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>Describe / day</label>
+  <input name="quota_describe_day" value="{{ quota_describe_day }}">
+  <label>Read / day</label>
+  <input name="quota_read_day" value="{{ quota_read_day }}">
+  <label>Voice / day</label>
+  <input name="quota_voice_day" value="{{ quota_voice_day }}">
+  <p style="margin-top:16px"><button type="submit">Save</button></p>
+</form>
+{% endblock %}

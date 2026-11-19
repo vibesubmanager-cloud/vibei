@@ -1,0 +1,9 @@
+﻿ROLLBACK_PROOF 2026-11-18T12:20:33.0218171+05:30
+adb devices:
+List of devices attached
+
+History restore: NONE (Cursor/VS Code Local History had 0 matches for target files).
+Rolled back: Vosk always-on + task restart loop; ActivityScope cancel-on-claim; priority/duck speech queue; BigTapButton extra haptic; task setTaskListening auto-start.
+Kept: VIVEI visual design.
+APK: apps/oriente_app/build/app/outputs/flutter-apk/app-release.apk (arm64) also copied to VIBEI.apk if present.
+Gate: BLOCKED — no authorized phone on adb.
