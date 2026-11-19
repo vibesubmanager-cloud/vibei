@@ -354,7 +354,18 @@
           <option value="gemini" selected>gemini</option>
         </select>
         <label for="ai-model">Model</label>
-        <input id="ai-model" value="${escapeHtml(s.model || "gemini-2.0-flash")}" />
+        <select id="ai-model">
+          ${(s.recommended_models || ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash"])
+            .map((m) => {
+              const cur = s.model || "gemini-3.8-flash";
+              const sel = m === cur ? " selected" : "";
+              return `<option value="${escapeHtml(m)}"${sel}>${escapeHtml(m)}</option>`;
+            })
+            .join("")}
+        </select>
+        <p class="muted" style="margin-top:6px">
+          <code>gemini-2.0-flash</code> is shut down — use <code>gemini-3.8-flash</code>.
+        </p>
         <label for="ai-api-key">API key (leave blank to keep existing)</label>
         <input id="ai-api-key" type="password" autocomplete="off" placeholder="AIza…" />
         <div class="toolbar" style="margin-top:14px">
@@ -385,11 +396,11 @@
       try {
         const out = await api.saveAiSettings({
           provider: "gemini",
-          model: $("ai-model").value.trim() || "gemini-2.0-flash",
+          model: $("ai-model").value.trim() || "gemini-3.8-flash",
           api_key: $("ai-api-key").value.trim(),
         });
         msg.textContent = out.api_key_set
-          ? "Saved. Key is stored on the server."
+          ? "Saved. Key is stored on the server. Model: " + (out.model || "")
           : "Saved model/provider (no new key sent).";
         msg.className = "ok-text";
         $("ai-api-key").value = "";
@@ -403,9 +414,18 @@
       msg.textContent = "Testing Gemini…";
       msg.className = "muted";
       try {
+        // Persist selected model before testing so the server uses it.
+        await api.saveAiSettings({
+          provider: "gemini",
+          model: $("ai-model").value.trim() || "gemini-3.8-flash",
+          api_key: $("ai-api-key").value.trim(),
+        });
+        $("ai-api-key").value = "";
         const out = await api.testAi();
         msg.textContent = out.ok
-          ? "Connection OK — " + (out.message || out.model || "Gemini reachable")
+          ? "Connection OK — " +
+            (out.model || "") +
+            (out.reply ? " · " + out.reply : "")
           : "Test failed";
         msg.className = out.ok ? "ok-text" : "error";
       } catch (err) {

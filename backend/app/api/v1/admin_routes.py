@@ -298,9 +298,15 @@ def admin_ai_settings_get():
     return jsonify(
         {
             "provider": get_setting("ai_provider", "gemini"),
-            "model": get_setting("ai_model", "gemini-2.0-flash"),
+            "model": get_setting("ai_model", "gemini-3.8-flash"),
             "api_key_set": bool(key),
             "api_key_masked": secret_masked("ai_api_key") if key else "",
+            "recommended_models": [
+                "gemini-3.8-flash",
+                "gemini-3.6-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-2.5-flash",
+            ],
         }
     )
 
@@ -308,12 +314,15 @@ def admin_ai_settings_get():
 @api_v1.post("/admin/ai-settings")
 @require_admin
 def admin_ai_settings_save():
+    from ...ai_providers import normalize_gemini_model
     from ...settings_store import ensure_defaults, get_setting, set_setting
 
     ensure_defaults()
     data = request.get_json(silent=True) or {}
     provider = (data.get("provider") or "gemini").strip().lower() or "gemini"
-    model = (data.get("model") or "gemini-2.0-flash").strip() or "gemini-2.0-flash"
+    model = (data.get("model") or "gemini-3.8-flash").strip() or "gemini-3.8-flash"
+    if provider in ("gemini", "google"):
+        model = normalize_gemini_model(model)
     key = (data.get("api_key") or data.get("ai_api_key") or "").strip()
 
     set_setting("ai_provider", provider, secret=False)
@@ -361,10 +370,16 @@ def admin_ai_describe_test():
     from ...settings_store import get_setting, set_setting
 
     data = request.get_json(silent=True) or {}
+    from ...ai_providers import normalize_gemini_model
+
     # Force Gemini for this admin test path as requested.
     set_setting("ai_provider", "gemini", secret=False)
-    if not get_setting("ai_model"):
-        set_setting("ai_model", "gemini-2.0-flash", secret=False)
+    current_model = get_setting("ai_model", "")
+    set_setting(
+        "ai_model",
+        normalize_gemini_model(current_model or "gemini-3.8-flash"),
+        secret=False,
+    )
 
     b64 = data.get("image_base64") or data.get("imageBase64") or ""
     if not b64:
@@ -398,7 +413,7 @@ def admin_ai_describe_test():
                 "ok": True,
                 "description": text,
                 "provider": "gemini",
-                "model": get_setting("ai_model", "gemini-2.0-flash"),
+                "model": get_setting("ai_model", "gemini-3.8-flash"),
                 "latency_ms": ms,
             }
         )

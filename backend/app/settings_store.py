@@ -73,7 +73,7 @@ def secret_masked(key: str) -> str:
 
 DEFAULTS = {
     "ai_provider": "gemini",
-    "ai_model": "gemini-2.0-flash",
+    "ai_model": "gemini-3.8-flash",
     # Set via admin panel or env — never commit real keys.
     "ai_api_key": "",
     "feature_online_describe": "1",
@@ -144,3 +144,12 @@ def ensure_defaults():
     for key, value in env_map.items():
         if value and not get_setting(key):
             set_setting(key, value, secret=key in secrets)
+
+    # Migrate shut-down Gemini model IDs stored in the DB.
+    from .ai_providers import normalize_gemini_model
+
+    current_model = get_setting("ai_model", "")
+    if current_model:
+        migrated = normalize_gemini_model(current_model)
+        if migrated != current_model:
+            set_setting("ai_model", migrated, secret=False)

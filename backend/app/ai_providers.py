@@ -28,6 +28,8 @@ def test_connection() -> dict:
         raise ProviderError("not_configured", "AI API key is not set")
     if not model:
         raise ProviderError("not_configured", "AI model ID is not set")
+    if provider in ("google", "gemini"):
+        model = normalize_gemini_model(model)
     prompt = "Reply with exactly: ok"
     text = _chat(provider, key, model, prompt, image_b64=None)
     return {"ok": True, "provider": provider, "model": model, "reply": text[:200]}
@@ -307,7 +309,44 @@ def _anthropic(key: str, model: str, prompt: str, image_b64: str | None) -> str:
     return "\n".join(texts).strip()
 
 
+# Shut-down / renamed Gemini IDs → current multimodal Flash.
+_GEMINI_MODEL_ALIASES = {
+    "gemini-2.0-flash": "gemini-3.8-flash",
+    "gemini-2.0-flash-001": "gemini-3.8-flash",
+    "gemini-2.0-flash-exp": "gemini-3.8-flash",
+    "gemini-2.0-flash-lite": "gemini-3.5-flash-lite",
+    "gemini-2.0-flash-lite-001": "gemini-3.5-flash-lite",
+    "gemini-1.5-flash": "gemini-3.8-flash",
+    "gemini-1.5-flash-latest": "gemini-3.8-flash",
+    "gemini-1.5-pro": "gemini-3.8-flash",
+    "gemini-pro": "gemini-3.8-flash",
+    "gemini-pro-vision": "gemini-3.8-flash",
+}
+
+
+def normalize_gemini_model(model: str) -> str:
+    name = (model or "").strip()
+    if name.startswith("models/"):
+        name = name[len("models/") :]
+    if not name:
+        return "gemini-3.8-flash"
+    return _GEMINI_MODEL_ALIASES.get(name, name)
+
+
+def _gemini_error_message(status: int, body: str) -> str:
+    try:
+        data = json.loads(body) if body else {}
+        msg = (data.get("error") or {}).get("message") or body
+    except Exception:
+        msg = body or ""
+    msg = (msg or "").strip()
+    if len(msg) > 280:
+        msg = msg[:277] + "…"
+    return f"Gemini HTTP {status}" + (f": {msg}" if msg else "")
+
+
 def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
+    model = normalize_gemini_model(model)
     parts = [{"text": prompt}]
     if image_b64:
         raw_b64 = image_b64
@@ -325,7 +364,7 @@ def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
     with httpx.Client(timeout=_timeout()) as client:
         r = client.post(url, json=body)
     if r.status_code >= 400:
-        raise ProviderError("provider_error", f"Gemini HTTP {r.status_code}")
+        raise ProviderError("provider_error", _gemini_error_message(r.status_code, r.text))
     data = r.json()
     cands = data.get("candidates") or []
     if not cands:
