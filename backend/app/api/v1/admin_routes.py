@@ -286,3 +286,121 @@ def admin_usage():
             ]
         }
     )
+
+
+@api_v1.get("/admin/ai-settings")
+@require_admin
+def admin_ai_settings_get():
+    from ...settings_store import ensure_defaults, get_setting, secret_masked
+
+    ensure_defaults()
+    key = get_setting("ai_api_key", "")
+    return jsonify(
+        {
+            "provider": get_setting("ai_provider", "gemini"),
+            "model": get_setting("ai_model", "gemini-2.0-flash"),
+            "api_key_set": bool(key),
+            "api_key_masked": secret_masked("ai_api_key") if key else "",
+        }
+    )
+
+
+@api_v1.post("/admin/ai-settings")
+@require_admin
+def admin_ai_settings_save():
+    from ...settings_store import ensure_defaults, get_setting, set_setting
+
+    ensure_defaults()
+    data = request.get_json(silent=True) or {}
+    provider = (data.get("provider") or "gemini").strip().lower() or "gemini"
+    model = (data.get("model") or "gemini-2.0-flash").strip() or "gemini-2.0-flash"
+    key = (data.get("api_key") or data.get("ai_api_key") or "").strip()
+
+    set_setting("ai_provider", provider, secret=False)
+    set_setting("ai_model", model, secret=False)
+    if key:
+        set_setting("ai_api_key", key, secret=True)
+
+    db.session.add(
+        AuditLog(
+            admin_id=g.admin.id,
+            action="ai_settings_update",
+            detail=f"provider={provider} model={model} key_updated={bool(key)}",
+        )
+    )
+    db.session.commit()
+    return jsonify(
+        {
+            "ok": True,
+            "provider": provider,
+            "model": model,
+            "api_key_set": bool(get_setting("ai_api_key")),
+        }
+    )
+
+
+@api_v1.post("/admin/ai-test")
+@require_admin
+def admin_ai_test():
+    from ...ai_providers import ProviderError, test_connection
+
+    try:
+        return jsonify(test_connection())
+    except ProviderError as e:
+        return _err(e.code, e.message, 502)
+
+
+@api_v1.post("/admin/ai-describe-test")
+@require_admin
+def admin_ai_describe_test():
+    """Upload an image (base64) and run Gemini describe — admin key test."""
+    import base64
+    import time
+
+    from ...ai_providers import ProviderError, describe_image
+    from ...settings_store import get_setting, set_setting
+
+    data = request.get_json(silent=True) or {}
+    # Force Gemini for this admin test path as requested.
+    set_setting("ai_provider", "gemini", secret=False)
+    if not get_setting("ai_model"):
+        set_setting("ai_model", "gemini-2.0-flash", secret=False)
+
+    b64 = data.get("image_base64") or data.get("imageBase64") or ""
+    if not b64:
+        return _err("invalid", "Missing image_base64", 400)
+    # Strip data-URL prefix if present
+    if "," in b64 and b64.strip().startswith("data:"):
+        b64 = b64.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(b64, validate=False)
+    except Exception:
+        return _err("invalid", "Invalid base64 image", 400)
+    if len(raw) > 4 * 1024 * 1024:
+        return _err("invalid", "Image too large (max 4MB)", 400)
+
+    t0 = time.time()
+    try:
+        text = describe_image(
+            b64,
+            scene_context="Admin panel API key test",
+            language="en",
+        )
+        ms = int((time.time() - t0) * 1000)
+        record_activity(
+            user_id=None,
+            category="ai_describe",
+            action="admin_describe_test",
+            detail={"latency_ms": ms, "admin_id": g.admin.id},
+        )
+        return jsonify(
+            {
+                "ok": True,
+                "description": text,
+                "provider": "gemini",
+                "model": get_setting("ai_model", "gemini-2.0-flash"),
+                "latency_ms": ms,
+            }
+        )
+    except ProviderError as e:
+        return _err(e.code, e.message, 502)

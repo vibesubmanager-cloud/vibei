@@ -116,6 +116,22 @@ button.danger {
   min-height: 1.2em;
 }
 
+.ok-text {
+  color: var(--ok);
+  font-size: 0.85rem;
+  margin-top: 10px;
+}
+
+.result-box {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+  font-size: 0.9rem;
+  min-height: 4em;
+  color: var(--text);
+}
+
 #app-view {
   display: grid;
   grid-template-columns: 220px 1fr;

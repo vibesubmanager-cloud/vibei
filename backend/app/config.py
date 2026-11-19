@@ -11,6 +11,13 @@ class Config:
     uri = DATABASE_URL
     if uri.startswith("postgres://"):
         uri = uri.replace("postgres://", "postgresql://", 1)
+    # psycopg2 does not always accept channel_binding=require
+    if "channel_binding=" in uri:
+        from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+        parts = urlparse(uri)
+        q = [(k, v) for k, v in parse_qsl(parts.query) if k != "channel_binding"]
+        uri = urlunparse(parts._replace(query=urlencode(q)))
     SQLALCHEMY_DATABASE_URI = uri
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_pre_ping": True,

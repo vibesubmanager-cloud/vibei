@@ -310,7 +310,13 @@ def _anthropic(key: str, model: str, prompt: str, image_b64: str | None) -> str:
 def _gemini(key: str, model: str, prompt: str, image_b64: str | None) -> str:
     parts = [{"text": prompt}]
     if image_b64:
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_b64}})
+        raw_b64 = image_b64
+        mime = "image/jpeg"
+        if raw_b64.strip().startswith("data:") and "," in raw_b64:
+            header, raw_b64 = raw_b64.split(",", 1)
+            if "image/" in header:
+                mime = header.split(";")[0].split(":", 1)[1].strip() or mime
+        parts.append({"inline_data": {"mime_type": mime, "data": raw_b64}})
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{model}:generateContent?key={key}"

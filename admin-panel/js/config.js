@@ -6,4 +6,4 @@
 window.VIBEI_API_BASE =
   window.VIBEI_API_BASE ||
   localStorage.getItem("vibei_api_base") ||
-  "http://127.0.0.1:5000";
+  "https://vibei.onrender.com";

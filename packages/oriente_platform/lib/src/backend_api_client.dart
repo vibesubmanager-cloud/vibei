@@ -81,21 +81,36 @@ class BackendApiClient {
   BackendApiClient({String? baseUrl}) : _baseOverride = baseUrl;
 
   final String? _baseOverride;
+  String? _prefsBase;
   String? _access;
   String? _refresh;
   AppRemoteConfig _config = AppRemoteConfig.empty;
   DateTime _configAt = DateTime.fromMillisecondsSinceEpoch(0);
+  bool? _lastHealthOk;
+  String? _lastHealthError;
 
   AppRemoteConfig get config => _config;
   bool get isSignedIn => (_access ?? '').isNotEmpty;
-  String get baseUrl => (_baseOverride ?? kVibeiApiBase).trim().replaceAll(RegExp(r'/$'), '');
+
+  /// Runtime prefs URL wins, then constructor override, then dart-define.
+  String get baseUrl {
+    final raw = (_prefsBase?.trim().isNotEmpty == true)
+        ? _prefsBase!
+        : ((_baseOverride?.trim().isNotEmpty == true)
+            ? _baseOverride!
+            : kVibeiApiBase);
+    return raw.trim().replaceAll(RegExp(r'/$'), '');
+  }
 
   bool get isConfigured => baseUrl.isNotEmpty;
+  bool? get lastHealthOk => _lastHealthOk;
+  String? get lastHealthError => _lastHealthError;
 
   Future<void> loadSession() async {
     final p = await SharedPreferences.getInstance();
     _access = p.getString('vibei_access');
     _refresh = p.getString('vibei_refresh');
+    _prefsBase = p.getString('vibei_api_base') ?? p.getString('visionProxyUrl');
     final cached = p.getString('vibei_config_cache');
     if (cached != null && cached.isNotEmpty) {
       try {
@@ -104,9 +119,53 @@ class BackendApiClient {
         );
       } catch (_) {}
     }
-    // Persist build-time base into prefs so ConnectivityService can ping /healthz.
+    // Persist active base so ConnectivityService can ping /healthz.
     if (baseUrl.isNotEmpty) {
       await p.setString('visionProxyUrl', baseUrl);
+      await p.setString('vibei_api_base', baseUrl);
+    }
+  }
+
+  /// Save backend URL from Settings (works without rebuilding the APK).
+  Future<void> setBaseUrl(String url) async {
+    final cleaned = url.trim().replaceAll(RegExp(r'/$'), '');
+    _prefsBase = cleaned;
+    final p = await SharedPreferences.getInstance();
+    if (cleaned.isEmpty) {
+      await p.remove('vibei_api_base');
+      await p.remove('visionProxyUrl');
+      _lastHealthOk = null;
+      _lastHealthError = null;
+      return;
+    }
+    await p.setString('vibei_api_base', cleaned);
+    await p.setString('visionProxyUrl', cleaned);
+  }
+
+  /// GET /healthz — true when the Render/backend instance responds.
+  Future<bool> pingHealth() async {
+    if (!isConfigured) {
+      _lastHealthOk = false;
+      _lastHealthError = 'No backend URL set';
+      return false;
+    }
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final uri = Uri.parse('$baseUrl/healthz');
+      final req = await client.getUrl(uri).timeout(const Duration(seconds: 8));
+      final res = await req.close().timeout(const Duration(seconds: 8));
+      final body = await res.transform(utf8.decoder).join();
+      final ok = res.statusCode == 200 &&
+          (body.contains('"ok"') || body.contains('"status"'));
+      _lastHealthOk = ok;
+      _lastHealthError = ok ? null : 'HTTP ${res.statusCode}';
+      return ok;
+    } catch (e) {
+      _lastHealthOk = false;
+      _lastHealthError = e.toString();
+      return false;
+    } finally {
+      client.close(force: true);
     }
   }
 

@@ -120,7 +120,9 @@ DEFAULTS = {
 
 
 def ensure_defaults():
-    secrets = {"ai_api_key"}
+    import os
+
+    secrets = {"ai_api_key", "cloudinary_api_key", "cloudinary_api_secret"}
     for k, v in DEFAULTS.items():
         row = Setting.query.filter_by(key=k).first()
         if row is None:
@@ -129,3 +131,16 @@ def ensure_defaults():
             set_setting(k, v, secret=True)
         elif k in ("ai_provider", "ai_model") and not get_setting(k):
             set_setting(k, v, secret=False)
+
+    # Seed Cloudinary / AI from environment when DB values are empty.
+    env_map = {
+        "cloudinary_cloud_name": os.environ.get("CLOUDINARY_CLOUD_NAME", ""),
+        "cloudinary_api_key": os.environ.get("CLOUDINARY_API_KEY", ""),
+        "cloudinary_api_secret": os.environ.get("CLOUDINARY_API_SECRET", ""),
+        "ai_api_key": os.environ.get("AI_API_KEY", ""),
+        "ai_provider": os.environ.get("AI_PROVIDER", ""),
+        "ai_model": os.environ.get("AI_MODEL", ""),
+    }
+    for key, value in env_map.items():
+        if value and not get_setting(key):
+            set_setting(key, value, secret=key in secrets)

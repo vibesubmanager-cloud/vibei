@@ -84,5 +84,23 @@
     usage() {
       return request("/api/v1/admin/usage");
     },
+    aiSettings() {
+      return request("/api/v1/admin/ai-settings");
+    },
+    saveAiSettings(body) {
+      return request("/api/v1/admin/ai-settings", {
+        method: "POST",
+        body,
+      });
+    },
+    testAi() {
+      return request("/api/v1/admin/ai-test", { method: "POST", body: {} });
+    },
+    describeTest(imageBase64) {
+      return request("/api/v1/admin/ai-describe-test", {
+        method: "POST",
+        body: { image_base64: imageBase64 },
+      });
+    },
   };
 })();

@@ -19,13 +19,67 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   final _email = TextEditingController();
   final _password = TextEditingController();
+  final _apiBase = TextEditingController();
   String? _authMsg;
   bool _authBusy = false;
+  bool _backendBusy = false;
+  String? _backendStatus; // Connected / Not connected / …
+  bool? _backendOk;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadBackendUrl());
+  }
+
+  Future<void> _loadBackendUrl() async {
+    final client = ref.read(backendApiClientProvider);
+    await client.loadSession();
+    if (!mounted) return;
+    setState(() {
+      _apiBase.text = client.baseUrl.isNotEmpty
+          ? client.baseUrl
+          : 'https://vibei.onrender.com';
+    });
+    await _testBackend(silent: true);
+  }
+
+  Future<void> _saveAndTestBackend() async {
+    setState(() {
+      _backendBusy = true;
+      _backendStatus = 'Saving…';
+    });
+    final client = ref.read(backendApiClientProvider);
+    await client.setBaseUrl(_apiBase.text.trim());
+    await _testBackend();
+  }
+
+  Future<void> _testBackend({bool silent = false}) async {
+    setState(() {
+      _backendBusy = true;
+      if (!silent) _backendStatus = 'Checking…';
+    });
+    final client = ref.read(backendApiClientProvider);
+    final ok = await client.pingHealth();
+    if (!mounted) return;
+    setState(() {
+      _backendBusy = false;
+      _backendOk = ok;
+      _backendStatus = ok
+          ? 'Backend connected'
+          : 'Backend not connected${client.lastHealthError != null ? ": ${client.lastHealthError}" : ""}';
+    });
+    if (ok) {
+      await ref.read(remoteConfigProvider.notifier).refresh();
+      await ref.read(connectivityServiceProvider).refresh();
+    }
+  }
 
   @override
   void dispose() {
     _email.dispose();
     _password.dispose();
+    _apiBase.dispose();
     super.dispose();
   }
 
@@ -155,6 +209,73 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           const SizedBox(height: 24),
           Semantics(
             header: true,
+            child: Text('Backend', style: theme.textTheme.headlineMedium),
+          ),
+          const SizedBox(height: 8),
+          Semantics(
+            liveRegion: true,
+            child: Row(
+              children: [
+                Icon(
+                  _backendOk == true
+                      ? Icons.check_circle
+                      : _backendOk == false
+                          ? Icons.error
+                          : Icons.cloud_outlined,
+                  color: _backendOk == true
+                      ? Colors.green
+                      : _backendOk == false
+                          ? theme.colorScheme.error
+                          : theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _backendStatus ??
+                        (client.isConfigured
+                            ? 'Backend URL saved — tap Test'
+                            : 'No backend URL yet'),
+                    style: theme.textTheme.bodyLarge,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _apiBase,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+              labelText: 'Backend URL (Render)',
+              hintText: 'https://vibei.onrender.com',
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: FilledButton(
+                  onPressed: _backendBusy ? null : _saveAndTestBackend,
+                  child: Text(_backendBusy ? 'Working…' : 'Save & test'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: _backendBusy ? null : () => _testBackend(),
+                  child: const Text('Test only'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'When connected, the app can sync accounts and optional online features.',
+            style: theme.textTheme.bodyMedium,
+          ),
+          const SizedBox(height: 24),
+          Semantics(
+            header: true,
             child: Text('Online', style: theme.textTheme.headlineMedium),
           ),
           const SizedBox(height: 8),
@@ -162,13 +283,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             liveRegion: true,
             child: Text(_onlineStatusLabel(onlineStatus)),
           ),
-          if (!client.isConfigured)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: Text(
-                'Build with --dart-define=VIBEI_API_BASE=https://your-api',
-              ),
-            ),
           const SizedBox(height: 12),
           if (!client.isSignedIn) ...[
             TextField(

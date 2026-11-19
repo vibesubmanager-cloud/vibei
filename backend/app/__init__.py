@@ -1,4 +1,7 @@
 import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 from flask import Flask
 from flask_cors import CORS
 from flask_migrate import Migrate
@@ -10,6 +13,9 @@ from .models import *  # noqa: F401,F403
 
 csrf = CSRFProtect()
 migrate = Migrate()
+
+# Load backend/.env for local runs (Render uses dashboard env vars).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 def create_app(config_object=None):

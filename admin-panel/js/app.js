@@ -96,6 +96,7 @@
       users: "Users",
       activities: "Activities",
       usage: "AI / API usage",
+      apikeys: "API keys",
     };
     pageTitle.textContent = titles[page] || page;
     content.innerHTML = '<p class="muted">Loading…</p>';
@@ -104,6 +105,7 @@
       else if (page === "users") await renderUsers();
       else if (page === "activities") await renderActivities();
       else if (page === "usage") await renderUsage();
+      else if (page === "apikeys") await renderApiKeys();
     } catch (err) {
       content.innerHTML =
         '<p class="error">' + escapeHtml(err.message || "Failed") + "</p>";
@@ -331,6 +333,119 @@
         </table>
       </div>
     `;
+  }
+
+  async function renderApiKeys() {
+    const s = await api.aiSettings();
+    content.innerHTML = `
+      <div class="panel">
+        <div class="panel-head">
+          <strong>Gemini API key</strong>
+          <span class="pill ${s.api_key_set ? "ok" : "bad"}">${
+            s.api_key_set ? "key saved" : "no key"
+          }</span>
+        </div>
+        <p class="muted">
+          Store a Google Gemini key here. The describe test always uses Gemini.
+          ${s.api_key_masked ? " Current: <code>" + escapeHtml(s.api_key_masked) + "</code>" : ""}
+        </p>
+        <label for="ai-provider">Provider</label>
+        <select id="ai-provider">
+          <option value="gemini" selected>gemini</option>
+        </select>
+        <label for="ai-model">Model</label>
+        <input id="ai-model" value="${escapeHtml(s.model || "gemini-2.0-flash")}" />
+        <label for="ai-api-key">API key (leave blank to keep existing)</label>
+        <input id="ai-api-key" type="password" autocomplete="off" placeholder="AIza…" />
+        <div class="toolbar" style="margin-top:14px">
+          <button id="save-ai-key">Save key</button>
+          <button class="secondary" id="test-ai-key">Test connection</button>
+        </div>
+        <p id="ai-key-msg" class="muted" style="margin-top:10px"></p>
+      </div>
+
+      <div class="panel" style="margin-top:12px">
+        <div class="panel-head"><strong>Test: describe an image (Gemini)</strong></div>
+        <p class="muted">Upload a photo — Gemini will return a short description if the key works.</p>
+        <label for="describe-file">Image</label>
+        <input id="describe-file" type="file" accept="image/*" />
+        <div class="toolbar" style="margin-top:14px">
+          <button id="run-describe">Describe image</button>
+        </div>
+        <pre id="describe-result" class="result-box" style="margin-top:12px;white-space:pre-wrap"></pre>
+      </div>
+    `;
+
+    const msg = $("ai-key-msg");
+    const result = $("describe-result");
+
+    $("save-ai-key").addEventListener("click", async () => {
+      msg.textContent = "Saving…";
+      msg.className = "muted";
+      try {
+        const out = await api.saveAiSettings({
+          provider: "gemini",
+          model: $("ai-model").value.trim() || "gemini-2.0-flash",
+          api_key: $("ai-api-key").value.trim(),
+        });
+        msg.textContent = out.api_key_set
+          ? "Saved. Key is stored on the server."
+          : "Saved model/provider (no new key sent).";
+        msg.className = "ok-text";
+        $("ai-api-key").value = "";
+      } catch (err) {
+        msg.textContent = err.message || "Save failed";
+        msg.className = "error";
+      }
+    });
+
+    $("test-ai-key").addEventListener("click", async () => {
+      msg.textContent = "Testing Gemini…";
+      msg.className = "muted";
+      try {
+        const out = await api.testAi();
+        msg.textContent = out.ok
+          ? "Connection OK — " + (out.message || out.model || "Gemini reachable")
+          : "Test failed";
+        msg.className = out.ok ? "ok-text" : "error";
+      } catch (err) {
+        msg.textContent = err.message || "Test failed";
+        msg.className = "error";
+      }
+    });
+
+    $("run-describe").addEventListener("click", async () => {
+      const file = $("describe-file").files?.[0];
+      if (!file) {
+        result.textContent = "Choose an image first.";
+        return;
+      }
+      result.textContent = "Uploading to Gemini…";
+      try {
+        const b64 = await fileToBase64(file);
+        const out = await api.describeTest(b64);
+        result.textContent =
+          (out.description || "(empty)") +
+          "\n\n— " +
+          (out.provider || "gemini") +
+          " / " +
+          (out.model || "") +
+          " · " +
+          (out.latency_ms ?? "?") +
+          " ms";
+      } catch (err) {
+        result.textContent = "Error: " + (err.message || "describe failed");
+      }
+    });
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.onerror = () => reject(new Error("Could not read file"));
+      reader.readAsDataURL(file);
+    });
   }
 
   boot();
