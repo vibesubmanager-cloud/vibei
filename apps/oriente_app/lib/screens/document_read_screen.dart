@@ -13,7 +13,12 @@ import '../widgets/design/camera_task_scaffold.dart';
 import '../widgets/native_camera_preview.dart';
 import '../widgets/perf_overlay.dart';
 
-/// READ: online detailed (Gemini/backend) or offline OCR — never refuse.
+/// READ_MODE — Gemini document understanding + spoken reading with pause/resume.
+///
+/// Does not use object detection. Primary path is Gemini (or backend AI).
+/// Offline OCR is only a last-resort fallback when online is unavailable after
+/// the user was already guided; if online is clearly unavailable at start,
+/// we explain that internet is required.
 class DocumentReadScreen extends ConsumerStatefulWidget {
   const DocumentReadScreen({super.key, this.shortLabel = false});
 
@@ -31,7 +36,7 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
   int _index = 0;
   bool _paused = false;
   bool _captured = false;
-  bool _saidOfflineNotice = false;
+  bool _speaking = false;
   late final AutoTorchController _torch;
   bool _torchIcon = false;
 
@@ -42,7 +47,7 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) => _boot());
   }
 
-  bool _canUseDetailed() {
+  bool _canUseOnline() {
     final online = ref.read(connectivityOnlineProvider);
     final privacy = ref.read(privacySettingsProvider);
     final status = ref.read(onlineFeatureStatusProvider);
@@ -63,20 +68,25 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
       return;
     }
 
-    final online = _canUseDetailed();
+    final online = _canUseOnline();
     if (!online && !widget.shortLabel) {
-      final msg = _saidOfflineNotice
-          ? 'Basic reading, offline.'
-          : 'I can read it for you. With internet, I can read it in more detail.';
-      _saidOfflineNotice = true;
-      await host.speak(msg);
-    } else {
       await host.speak(
-        widget.shortLabel
-            ? 'Reading the label. Hold steady.'
-            : 'Reading. Fill the frame with the page. Hold still.',
+        'Read mode needs an internet connection to read documents with Gemini. '
+        'Find text still works offline if you are looking for a specific word.',
       );
+      setState(() => _status = 'Internet required');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await ref.read(appControllerProvider.notifier).cancel();
+      return;
     }
+
+    await host.speak(
+      widget.shortLabel
+          ? 'Reading the label. Hold steady.'
+          : 'Of course. Please bring your camera closer to the paper and '
+              'position it so the entire page is visible. Try to keep the paper '
+              'steady and make sure there is enough light.',
+    );
 
     try {
       final session = FrameStreamSession(host);
@@ -91,14 +101,72 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
         _status = 'Hold still… capturing';
       });
       await host.setKeepScreenOn(true);
-      await Future<void>.delayed(const Duration(milliseconds: 1200));
-      await host.speak('Hold still.');
-      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await Future<void>.delayed(const Duration(milliseconds: 1400));
+      await _waitForUsableFrame();
       await _captureAndRead();
     } catch (e) {
-      setState(() => _status = 'Camera failed: $e');
+      setState(() => _status = 'Camera failed');
       await host.speak('Could not open the camera.');
     }
+  }
+
+  Future<void> _waitForUsableFrame() async {
+    final host = ref.read(orienteHostProvider);
+    final s = _frames;
+    if (s == null) return;
+
+    for (var i = 0; i < 6; i++) {
+      if (!mounted) return;
+      final brightness =
+          (s.latest?['brightness'] as num?)?.toDouble() ?? 0.5;
+      final sharpness =
+          (s.latest?['sharpness'] as num?)?.toDouble() ?? 12;
+      await _torch.onBrightness(brightness);
+      if (_torch.torchOn && mounted) setState(() => _torchIcon = true);
+
+      if (brightness < 0.14) {
+        await host.speak(
+          'The image appears too dark. Try moving towards better lighting.',
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        continue;
+      }
+      if (sharpness < 6) {
+        await host.speak('Please hold your phone steady.');
+        await Future<void>.delayed(const Duration(milliseconds: 800));
+        continue;
+      }
+      // Frame is reasonably usable.
+      return;
+    }
+    await host.speak('Hold still. Capturing now.');
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+  }
+
+  Future<String?> _onlineRead(List<int> jpeg) async {
+    String? onlineText;
+    if (GeminiVisionClient.isConfigured) {
+      try {
+        onlineText = await ref
+            .read(geminiVisionClientProvider)
+            .readPage(jpeg: jpeg)
+            .timeout(const Duration(seconds: 35));
+      } catch (_) {
+        onlineText = null;
+      }
+    }
+    if ((onlineText == null || onlineText.trim().isEmpty) &&
+        ref.read(backendApiClientProvider).isConfigured) {
+      final cloud = ref.read(cloudVisionProvider);
+      if (cloud is BackendCloudVisionProvider) {
+        try {
+          onlineText = await cloud.readPage(jpeg: jpeg);
+        } catch (_) {
+          onlineText = null;
+        }
+      }
+    }
+    return onlineText?.trim();
   }
 
   Future<void> _captureAndRead() async {
@@ -115,40 +183,21 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
       if (_torch.torchOn && mounted) setState(() => _torchIcon = true);
 
       await host.playEarcon('thinkingStart');
-      setState(() => _status = 'Working…');
+      setState(() => _status = 'Reading with Gemini…');
       final jpeg = await s.grabJpeg(maxEdge: 1280);
 
       String? onlineText;
-      final wantOnline = !widget.shortLabel && _canUseDetailed();
-
-      if (wantOnline && jpeg != null) {
-        try {
-          onlineText = await ref
-              .read(geminiVisionClientProvider)
-              .readPage(jpeg: jpeg)
-              .timeout(const Duration(seconds: 15));
-        } catch (_) {
-          onlineText = null;
-        }
-        if ((onlineText == null || onlineText.trim().isEmpty) &&
-            ref.read(backendApiClientProvider).isConfigured) {
-          final cloud = ref.read(cloudVisionProvider);
-          if (cloud is BackendCloudVisionProvider) {
-            try {
-              onlineText = await cloud.readPage(jpeg: jpeg);
-            } catch (_) {
-              onlineText = null;
-            }
-          }
-        }
+      if (jpeg != null && jpeg.isNotEmpty && _canUseOnline()) {
+        onlineText = await _onlineRead(jpeg);
       }
 
       await host.playEarcon('thinkingStop');
 
       String text;
-      if (onlineText != null && onlineText.trim().isNotEmpty) {
-        text = onlineText.trim();
-      } else {
+      if (onlineText != null && onlineText.isNotEmpty) {
+        text = onlineText;
+      } else if (widget.shortLabel) {
+        // Label mode may use offline OCR.
         text = s.ocrFullText.trim();
         if (text.isEmpty && jpeg != null) {
           final frame = await host.recognizeText(jpeg);
@@ -161,6 +210,13 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
           setState(() => _status = 'No text found');
           return;
         }
+      } else {
+        await host.speak(
+          'I could not read the page with Gemini. '
+          'Please try again with a clearer, well-lit view of the full page.',
+        );
+        setState(() => _status = 'Read failed');
+        return;
       }
 
       _paragraphs = _splitParagraphs(text);
@@ -172,18 +228,9 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
       await _speakFrom(_index);
     } catch (_) {
       await host.playEarcon('thinkingStop');
-      try {
-        final text = _frames?.ocrFullText.trim() ?? '';
-        if (text.isEmpty) {
-          await host.speak('I could not read any text.');
-          return;
-        }
-        _paragraphs = _splitParagraphs(text);
-        _index = 0;
-        await _speakFrom(0);
-      } catch (_) {
-        await host.speak('I could not read any text.');
-      }
+      await host.speak(
+        'Reading failed. Please try again with better lighting.',
+      );
     }
   }
 
@@ -214,17 +261,27 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
 
   Future<void> _speakFrom(int start) async {
     final host = ref.read(orienteHostProvider);
+    _speaking = true;
     for (var i = start; i < _paragraphs.length; i++) {
-      if (!mounted || _paused) {
+      if (!mounted) {
         _index = i;
+        _speaking = false;
         return;
       }
+      // Drain voice controls without re-sending the page to Gemini.
       final cmd = ref.read(appControllerProvider).readCommand;
       if (cmd != null) {
         ref.read(appControllerProvider.notifier).clearReadCommand();
         if (cmd == 'pause' || cmd == 'stop') {
           _paused = true;
           _index = i;
+          _speaking = false;
+          if (cmd == 'stop') {
+            await host.speak('Stopped reading.');
+            await ref.read(appControllerProvider.notifier).cancel();
+          } else {
+            await host.speak('Paused.');
+          }
           return;
         }
         if (cmd == 'resume') {
@@ -232,17 +289,29 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
         }
         if (cmd == 'next' && i + 1 < _paragraphs.length) {
           i++;
-        }
-        if (cmd == 'previous' && i > 0) {
+        } else if (cmd == 'previous' && i > 0) {
           i--;
         }
       }
+      if (_paused) {
+        _index = i;
+        _speaking = false;
+        return;
+      }
       _index = i;
       setState(() => _status = _paragraphs[i]);
+      ref.read(appControllerProvider.notifier).noteSpokenGuidance(_paragraphs[i]);
       await host.speak(_paragraphs[i], interrupt: true);
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await Future<void>.delayed(const Duration(milliseconds: 350));
     }
+    _speaking = false;
     await host.speak('End of text.');
+  }
+
+  Future<void> _onResumeListening() async {
+    if (!_paused || _speaking) return;
+    _paused = false;
+    await _speakFrom(_index);
   }
 
   Future<void> _stop() async {
@@ -263,6 +332,16 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.listen(
+      appControllerProvider.select((s) => s.readCommand),
+      (prev, next) {
+        if (next == null || next == prev) return;
+        if (next == 'resume' && _paused) {
+          ref.read(appControllerProvider.notifier).clearReadCommand();
+          unawaited(_onResumeListening());
+        }
+      },
+    );
     return PopScope(
       canPop: false,
       onPopInvokedWithResult: (didPop, _) {
@@ -270,14 +349,14 @@ class _DocumentReadScreenState extends ConsumerState<DocumentReadScreen> {
       },
       child: !_ready
           ? OrbStatusScaffold(
-              title: 'Read text',
+              title: 'Read mode',
               status: _status,
               onStop: _stop,
             )
           : Stack(
               children: [
                 CameraTaskScaffold(
-                  title: 'Read text',
+                  title: 'Read mode',
                   status: _status,
                   onStop: _stop,
                   showReticle: true,

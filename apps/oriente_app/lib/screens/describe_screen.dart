@@ -3,25 +3,27 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:oriente_domain/oriente_domain.dart';
+import 'package:oriente_platform/oriente_platform.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../providers.dart';
 import '../services/auto_torch.dart';
 import '../services/frame_stream_session.dart';
+import '../services/gemini_vision_client.dart';
 import '../widgets/design/camera_task_scaffold.dart';
 import '../widgets/native_camera_preview.dart';
 import '../widgets/perf_overlay.dart';
 
-/// SCENE_DESCRIPTION — offline only.
+/// DESCRIBE_MODE — online Gemini scene description.
 ///
-/// Reuses the same FrameHub object-detection stream as OBJECT_SEARCH.
-/// No Gemini, backend vision, or internet prompts.
+/// Does not use the offline object-detection scene narrative.
+/// Does not enter OfflineFindGuard (FIND isolation stays for object/text only).
 class DescribeScreen extends ConsumerStatefulWidget {
   const DescribeScreen({
     super.key,
     this.continuous = true,
     this.fromMemory = false,
-    this.onlineDetail = false, // kept for call-site compat; ignored
+    this.onlineDetail = true,
   });
 
   final bool continuous;
@@ -43,21 +45,30 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
   String _lastSpoken = '';
   String? _pendingText;
   String _viewKey = 'v0';
+  String _previousDescription = '';
   ViewMotionState _motionState = ViewMotionState.still;
   final _viewMotion = ViewMotionClassifier(settleMs: 500);
   DateTime _lastRequest = DateTime.fromMillisecondsSinceEpoch(0);
   int _gen = 0;
   late final AutoTorchController _torch;
   bool _torchIcon = false;
-  SceneDescriberState _offlineScene = const SceneDescriberState();
-  // Same detector stream as object search; minHits=1 so first speak is prompt.
-  final _offlineDescriber = SceneDescriber(minHits: 1);
 
   @override
   void initState() {
     super.initState();
     _torch = AutoTorchController(ref.read(orienteHostProvider));
     WidgetsBinding.instance.addPostFrameCallback((_) => _boot());
+  }
+
+  bool _canUseOnline() {
+    final online = ref.read(connectivityOnlineProvider);
+    final privacy = ref.read(privacySettingsProvider);
+    final status = ref.read(onlineFeatureStatusProvider);
+    return online &&
+        privacy.onlineVisionConsent &&
+        status == OnlineFeatureStatus.available &&
+        (GeminiVisionClient.isConfigured ||
+            ref.read(backendApiClientProvider).isConfigured);
   }
 
   Future<void> _boot() async {
@@ -76,6 +87,18 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
         gen: _gen,
         priority: SpeechPriority.userRequested,
         interrupt: false,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      if (scope.isActive(_owner, _gen)) await ctrl.cancel();
+      return;
+    }
+
+    if (!_canUseOnline()) {
+      await scope.speakOwned(
+        'Describe mode needs an internet connection and online vision. '
+        'Find objects and find text still work offline.',
+        owner: _owner,
+        gen: _gen,
       );
       await Future<void>.delayed(const Duration(milliseconds: 400));
       if (scope.isActive(_owner, _gen)) await ctrl.cancel();
@@ -105,10 +128,15 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
       await host.setKeepScreenOn(true);
       await host.playEarcon('thinkingStart');
       setState(() => _status = 'Describing…');
+      await scope.speakOwned(
+        'Looking at what is in front of you.',
+        owner: _owner,
+        gen: _gen,
+      );
       _timer = Timer.periodic(const Duration(milliseconds: 400), (_) {
         unawaited(_tick());
       });
-      await Future<void>.delayed(const Duration(milliseconds: 800));
+      await Future<void>.delayed(const Duration(milliseconds: 700));
       if (scope.isActive(_owner, _gen)) await _requestDescribe(force: true);
     } catch (_) {
       await scope.speakOwned(
@@ -124,6 +152,7 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
     if (!scope.isActive(_owner, _gen)) return;
     final s = _frames;
     if (!_ready || s == null || s.latest == null) return;
+    if (!widget.continuous) return;
 
     final brightness = (s.latest?['brightness'] as num?)?.toDouble() ?? 0.5;
     await _torch.onBrightness(brightness);
@@ -160,81 +189,137 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
     final elapsed = DateTime.now().difference(_lastRequest);
 
     if ((viewChanged || settledStill) &&
-        elapsed >= const Duration(seconds: 4)) {
+        elapsed >= const Duration(seconds: 5)) {
       await _requestDescribe(force: viewChanged);
     }
+  }
+
+  Future<String?> _onlineDescribe({
+    required List<int> jpeg,
+    required bool viewChanged,
+  }) async {
+    String? text;
+    if (GeminiVisionClient.isConfigured) {
+      try {
+        text = await ref
+            .read(geminiVisionClientProvider)
+            .describe(
+              jpeg: jpeg,
+              previousDescription: _previousDescription,
+              viewChanged: viewChanged,
+              detailed: widget.onlineDetail,
+            )
+            .timeout(const Duration(seconds: 25));
+      } catch (_) {
+        text = null;
+      }
+    }
+    if ((text == null || text.trim().isEmpty) &&
+        ref.read(backendApiClientProvider).isConfigured) {
+      final cloud = ref.read(cloudVisionProvider);
+      if (cloud is BackendCloudVisionProvider) {
+        try {
+          final result = await cloud.describeView(
+            jpeg: jpeg,
+            offlineHints: {
+              'previous': _previousDescription,
+              'viewChanged': viewChanged,
+              'mode': 'DESCRIBE_MODE',
+            },
+            viewKey: _viewKey,
+          );
+          text = result?.text;
+        } catch (_) {
+          text = null;
+        }
+      }
+    }
+    return text?.trim();
   }
 
   Future<void> _requestDescribe({bool force = false}) async {
     final scope = ref.read(activityScopeProvider);
     if (!scope.isActive(_owner, _gen) || _requesting) return;
     final host = ref.read(orienteHostProvider);
+    final s = _frames;
+    if (s == null) return;
+
+    if (!_canUseOnline()) {
+      await scope.speakOwned(
+        'Describe mode needs an internet connection.',
+        owner: _owner,
+        gen: _gen,
+      );
+      return;
+    }
 
     _requesting = true;
     _lastRequest = DateTime.now();
     _viewKey = 'v${DateTime.now().millisecondsSinceEpoch}';
     try {
       await host.playEarcon('thinkingStart');
+      setState(() => _status = 'Asking Gemini…');
 
       final brightness =
-          (_frames?.latest?['brightness'] as num?)?.toDouble() ?? 0.5;
-      final String text;
+          (s.latest?['brightness'] as num?)?.toDouble() ?? 0.5;
+      await _torch.onBrightness(brightness);
+      if (_torch.torchOn && mounted) setState(() => _torchIcon = true);
+
       if (brightness < 0.12) {
-        text = 'The image is too dark to identify the surroundings clearly. '
-            'Try pointing your camera towards more light.';
-      } else {
-        text = _offlineDescribeOnce(force: force);
-      }
-
-      if (!scope.isActive(_owner, _gen)) return;
-      await host.playEarcon('thinkingStop');
-
-      if (text.trim().isEmpty) {
-        // Stay in session — try again on next settle; do not go home.
+        final dark =
+            'The image is too dark. Try pointing your camera towards more light.';
+        await host.playEarcon('thinkingStop');
+        if (_speakingDescription) {
+          _pendingText = dark;
+        } else {
+          await _speakFull(dark);
+        }
         return;
       }
 
+      final jpeg = await s.grabJpeg(maxEdge: 1024);
+      if (jpeg == null || jpeg.isEmpty) {
+        await host.playEarcon('thinkingStop');
+        await scope.speakOwned(
+          'I could not capture a clear image. Please try again.',
+          owner: _owner,
+          gen: _gen,
+        );
+        return;
+      }
+
+      final text = await _onlineDescribe(jpeg: jpeg, viewChanged: force);
+      if (!scope.isActive(_owner, _gen)) return;
+      await host.playEarcon('thinkingStop');
+
+      if (text == null || text.isEmpty) {
+        await scope.speakOwned(
+          'I could not get a description right now. Please try again in a moment.',
+          owner: _owner,
+          gen: _gen,
+        );
+        return;
+      }
+
+      _previousDescription = text;
+      ref.read(appControllerProvider.notifier).rememberRoom(text);
       if (_speakingDescription) {
-        _pendingText = text.trim();
+        _pendingText = text;
       } else {
-        await _speakFull(text.trim());
+        await _speakFull(text);
+      }
+    } catch (_) {
+      await host.playEarcon('thinkingStop');
+      if (scope.isActive(_owner, _gen)) {
+        await scope.speakOwned(
+          'Describe mode failed. Check your connection and try again.',
+          owner: _owner,
+          gen: _gen,
+        );
       }
     } finally {
       _requesting = false;
     }
-  }
-
-  /// Offline narrative from the same detector boxes OBJECT_SEARCH uses.
-  String _offlineDescribeOnce({bool force = false}) {
-    final detections = _frames?.detections ?? const [];
-    _offlineScene = _offlineDescriber.ingest(_offlineScene, detections);
-    if (force) {
-      _offlineScene = _offlineDescriber.onViewChanged(_offlineScene);
-    }
-    final stable = _offlineDescriber.stable(_offlineScene);
-    if (stable.isEmpty) {
-      return 'I cannot identify any objects clearly in front of you. '
-          'Try moving your camera slowly.';
-    }
-    if (force || !widget.continuous) {
-      final summary = _offlineDescriber.summarize(stable);
-      if (summary.trim().isEmpty) {
-        return 'I cannot identify any objects clearly in front of you. '
-            'Try moving your camera slowly.';
-      }
-      final seeded = {..._offlineScene.said};
-      for (final s in summary
-          .split(RegExp(r'(?<=[.!?])\s+'))
-          .map((e) => e.trim())
-          .where((e) => e.isNotEmpty)) {
-        seeded.add(s.toLowerCase());
-      }
-      _offlineScene = _offlineScene.copyWith(said: seeded);
-      return summary;
-    }
-    final result = _offlineDescriber.updateSpeech(_offlineScene);
-    _offlineScene = result.state;
-    return result.speech?.trim() ?? '';
   }
 
   Future<void> _speakFull(String text) async {
@@ -245,6 +330,7 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
       _status = text;
       _lastSpoken = text;
     });
+    ref.read(appControllerProvider.notifier).noteSpokenGuidance(text);
     final sentences = text
         .split(RegExp(r'(?<=[.!?])\s+'))
         .map((e) => e.trim())
@@ -306,14 +392,14 @@ class _DescribeScreenState extends ConsumerState<DescribeScreen> {
       },
       child: !_ready
           ? OrbStatusScaffold(
-              title: 'Surroundings',
+              title: 'Describe',
               status: _status,
               onStop: _stop,
             )
           : Stack(
               children: [
                 CameraTaskScaffold(
-                  title: 'Surroundings',
+                  title: 'Describe',
                   status: _lastSpoken.isNotEmpty ? _lastSpoken : _status,
                   onStop: _stop,
                   showReticle: false,

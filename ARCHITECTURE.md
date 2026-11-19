@@ -67,7 +67,10 @@ backend; the backend is for accounts, optional cloud AI, and the admin panel.
 | What happens | Where it runs | What admin sees |
 |---|---|---|
 | User says “find a bottle” | Phone detector (offline) | Activity `object_search` if event posted |
-| User says “what is in front of me?” | Phone SceneDescriber (offline) | Activity `scene_description` if event posted |
+| User says “what is in front of me?” | Phone DESCRIBE_MODE → Gemini (online) | Activity `ai_describe` if event posted |
+| User says “read this paper” | Phone READ_MODE → Gemini (online) | Activity `ai_read` if event posted |
+| User says “find a bottle” | Phone OBJECT_SEARCH (offline detector) | Offline only |
+| User says “find the word Exit” | Phone TEXT_SEARCH (offline OCR) | Offline only |
 | User uses online describe | Render AI provider | Usage `describe` + activity `ai_describe` |
 | User signs up / logs in | Render auth | Users list + `auth` activity |
 

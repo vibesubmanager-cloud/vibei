@@ -25,7 +25,7 @@ class NarrationIntent extends AppIntent {
   const NarrationIntent();
 }
 
-/// Offline real-time describe (default).
+/// DESCRIBE_MODE — online Gemini scene description (not offline detector).
 class DescribeIntent extends AppIntent {
   const DescribeIntent({this.continuous = true, this.fromMemory = false});
 
@@ -33,7 +33,7 @@ class DescribeIntent extends AppIntent {
   final bool fromMemory;
 }
 
-/// Online detailed describe (consent + proxy).
+/// Alias of DESCRIBE_MODE (online Gemini). Kept for older call sites.
 class DescribeDetailIntent extends AppIntent {
   const DescribeDetailIntent();
 }
@@ -68,6 +68,7 @@ class RepeatIntent extends AppIntent {
   const RepeatIntent();
 }
 
+/// READ_MODE — online Gemini document understanding + spoken reading.
 class DocumentReadIntent extends AppIntent {
   const DocumentReadIntent();
 }

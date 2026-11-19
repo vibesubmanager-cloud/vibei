@@ -36,11 +36,45 @@ class TaskCommandParser {
         .replaceAll(RegExp(r"[^a-z0-9\s']"), ' ')
         .replaceAll(RegExp(r'\s+'), ' ')
         .trim();
-    if (_is(text, const ['pause'])) return 'pause';
-    if (_is(text, const ['resume', 'continue reading'])) return 'resume';
-    if (_is(text, const ['next paragraph', 'next'])) return 'next';
-    if (_is(text, const ['previous paragraph', 'previous', 'back paragraph'])) {
+    if (_is(text, const [
+      'pause',
+      'pause reading',
+      'hold on',
+      'wait',
+    ])) {
+      return 'pause';
+    }
+    if (_is(text, const [
+      'resume',
+      'continue',
+      'continue reading',
+      'keep reading',
+      'go on',
+    ])) {
+      return 'resume';
+    }
+    if (_is(text, const [
+      'next paragraph',
+      'read the next paragraph',
+      'next',
+    ])) {
+      return 'next';
+    }
+    if (_is(text, const [
+      'previous paragraph',
+      'previous',
+      'back paragraph',
+      'repeat the last paragraph',
+      'read that again',
+      'say that again',
+    ])) {
       return 'previous';
+    }
+    if (_is(text, const [
+      'stop reading',
+      'stop',
+    ])) {
+      return 'stop';
     }
     if (_is(text, const ['torch', 'flashlight', 'light on', 'light off'])) {
       return 'torch';

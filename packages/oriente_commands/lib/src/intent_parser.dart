@@ -342,15 +342,15 @@ class IntentParser {
     final hybridObjText = _tryObjectWithWrittenText(text);
     if (hybridObjText != null) return hybridObjText;
 
-    // SCENE_DESCRIPTION before FIND so "look around" / "look ahead" are not searches.
+    // DESCRIBE_MODE before FIND so "look around" / "look ahead" are not searches.
     final scene = _trySceneDescription(text);
     if (scene != null) return scene;
 
-    // FIND / LOOK / WHERE — object or unknown→text.
+    // FIND / LOOK / WHERE — object or unknown→text (OBJECT_SEARCH / TEXT_SEARCH).
     final findIntent = _tryFindIntent(text);
     if (findIntent != null) return findIntent;
 
-    // "More detail" still uses the same offline detector narrative.
+    // More detail still DESCRIBE_MODE (online Gemini).
     if (_containsAny(text, const [
       'describe in detail',
       'describe more clearly',
@@ -361,29 +361,9 @@ class IntentParser {
       return const DescribeIntent(continuous: true);
     }
 
-    if (_containsAny(text, const [
-      'read this page',
-      'read the page',
-      'read this document',
-      'read the document',
-      'read it to me',
-      'read the text',
-      'read this for me',
-      'read this',
-      'read that',
-      'read it',
-      'start reading',
-      'scan this page',
-      'read something',
-      'read text',
-      'read the label',
-      'read label',
-      'what does it say',
-      'whats it say',
-      "what's it say",
-    ])) {
-      return const DocumentReadIntent();
-    }
+    // READ_MODE — document / page reading (online Gemini).
+    final read = _tryReadMode(text);
+    if (read != null) return read;
 
     if (_looksConversational(text)) {
       if (onlineAvailable && onlineChatConsent) {
@@ -498,10 +478,83 @@ class IntentParser {
     return null;
   }
 
-  /// SCENE_DESCRIPTION — full-view environmental awareness (not object find).
+  /// READ_MODE — explicit document / page reading requests.
+  AppIntent? _tryReadMode(String text) {
+    if (_containsAny(text, const [
+      'read this page',
+      'read the page',
+      'read this document',
+      'read the document',
+      'read this paper',
+      'read the paper',
+      'read this book',
+      'read the book',
+      'read this letter',
+      'read the letter',
+      'read this notice',
+      'read the notice',
+      'read this sign',
+      'read the sign',
+      'read this paragraph',
+      'read the paragraph',
+      'read it to me',
+      'read the text',
+      'read this for me',
+      'read that for me',
+      'read this',
+      'read that',
+      'read it',
+      'start reading',
+      'scan this page',
+      'read something',
+      'read text',
+      'read the label',
+      'read label',
+      'read everything on this page',
+      'read everything on the page',
+      'read what is written here',
+      'read what is written',
+      'read whats written here',
+      "read what's written here",
+      'can you read this paper',
+      'can you read this document',
+      'can you read this book',
+      'can you read this',
+      'can you read that',
+      'can you read this aloud',
+      'can you read this document aloud',
+      'please read this for me',
+      'please read this',
+      'i want you to read something',
+      'i want you to read this',
+      'what does this paper say',
+      'what does this document say',
+      'what does this page say',
+      'what does this book say',
+      'what does this letter say',
+      'what does this notice say',
+      'what does this say',
+      'what does it say',
+      'whats it say',
+      "what's it say",
+      'tell me what is written on this page',
+      'tell me what is written here',
+      'tell me what this paper says',
+      'tell me what this document says',
+      'read the text in front of me',
+      'read this page to me',
+    ])) {
+      return const DocumentReadIntent();
+    }
+    return null;
+  }
+
+  /// DESCRIBE_MODE — Gemini scene description (not object find, not OCR).
   AppIntent? _trySceneDescription(String text) {
     // Keep "look around and find a bottle" / "can you see a chair" as finds.
     if (_looksLikeObjectOrTextFind(text)) return null;
+    // Explicit read wins over vague "what does …" scene phrasing.
+    if (_tryReadMode(text) != null) return null;
 
     if (_equalsAny(text, const [
       'describe',
@@ -821,6 +874,14 @@ class IntentParser {
     'what can you see around here',
     'can you look around and describe everything',
     'give me an overview of my surroundings',
+    'give me a description of what is visible',
+    'what objects and things are around me',
+    'can you describe my surroundings',
+    'tell me what is around me',
+    'tell me what is happening around me',
+    'describe the environment',
+    'describe everything in front of me',
+    'can you explain what is in front of me',
     'what is in this room',
     "what's in this room",
     'tell me what is in this room',

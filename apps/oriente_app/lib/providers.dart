@@ -36,7 +36,7 @@ final autoFlashlightProvider =
   return _BoolPref('autoFlashlight', true);
 });
 
-/// Always-on offline describe engine (no Settings toggle). Kept for callers.
+/// Legacy flag — DESCRIBE_MODE is always online Gemini when available.
 final offlineDescribeFallbackProvider = Provider<bool>((ref) => true);
 
 final geminiVisionClientProvider = Provider<GeminiVisionClient>((ref) {
@@ -948,19 +948,20 @@ class AppController extends StateNotifier<AppUiState> {
         );
         await _host.setKeepScreenOn(true);
       case DescribeDetailIntent():
-        // Same offline detector narrative as SCENE_DESCRIPTION — no cloud.
-        await _openDescribe(continuous: true);
+        // DESCRIBE_MODE — online Gemini.
+        await _openDescribe(continuous: true, online: true);
       case DescribeIntent(:final continuous, :final fromMemory):
         await _openDescribe(
           continuous: continuous,
           fromMemory: fromMemory,
+          online: true,
         );
       case NarrationIntent():
-        await _openDescribe(continuous: true);
+        await _openDescribe(continuous: true, online: true);
       case IdentifyIntent():
-        await _openDescribe(continuous: true);
+        await _openDescribe(continuous: true, online: true);
       case NearbyObjectsIntent():
-        await _openDescribe(continuous: true);
+        await _openDescribe(continuous: true, online: true);
       case PersonalRememberIntent(:final name):
         if (!_ref.read(coreExtrasEnabledProvider)) {
           await _host.speak(_unknownMsg);
@@ -985,6 +986,7 @@ class AppController extends StateNotifier<AppUiState> {
   Future<void> _openDescribe({
     bool continuous = true,
     bool fromMemory = false,
+    bool online = true,
   }) async {
     final loop = fromMemory ? false : true;
     _applyFlow(AppFlowEvent.startDescribe);
@@ -992,11 +994,11 @@ class AppController extends StateNotifier<AppUiState> {
       phase: UiPhase.describe,
       flow: AppFlowState.executing,
       executing: ExecutingKind.describe,
-      statusLine: 'Surroundings',
+      statusLine: 'Describe mode',
       speechMuted: false,
       describeContinuous: loop || continuous,
       describeFromMemory: fromMemory,
-      describeOnlineDetail: false,
+      describeOnlineDetail: online,
     );
     await _host.setSearchTicks(rateHz: 0);
   }
